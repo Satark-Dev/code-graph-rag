@@ -1,0 +1,9 @@
+include:
+  # Static Code Analysis
+  - template: Security/SAST.gitlab-ci.yml
+
+  # Dependency (Supply Chain)
+  - template: Security/Dependency-Scanning.gitlab-ci.yml
+
+  # Secret Detection
+  - template: Security/Secret-Detection.gitlab-ci.yml
