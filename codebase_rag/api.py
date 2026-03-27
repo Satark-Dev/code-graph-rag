@@ -3,7 +3,7 @@ import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
@@ -22,8 +22,7 @@ from .main import (
 from .parser_loader import load_parsers
 from .services.chat_orchestrator import ChatOrchestratorService
 from .services.chat_orchestrator import ChatStageError
-from .services.findings_client import fetch_org_tool_finding
-from .services.scoring_service import extract_scored_findings, normalize_scoring_output
+from .services.chat_batch_service import process_chat_for_findings_ids
 from .chat_schemas import ApiErrorDetail, ApiErrorResponse, ChatResponsePayload
 from .request_context import org_id_context
 from .utils.dependencies import has_semantic_dependencies
@@ -141,39 +140,22 @@ async def chat_endpoint(request: ChatRequest):
 
     ctx_token = org_id_context.set(request.org_id)
     try:
-        findings: list[dict[str, Any]] = []
-        for finding_id in request.org_tool_findings_ids:
-            finding_payload = await fetch_org_tool_finding(
-                org_id=request.org_id, org_tool_findings_id=finding_id
-            )
-            findings.append(finding_payload)
-
-        request_query = {"findings": findings}
-        response_data = await ChatOrchestratorService.process_query(
-            request_query=request_query,
+        response_data, scored_findings = await process_chat_for_findings_ids(
+            org_id=request.org_id,
+            org_tool_findings_ids=request.org_tool_findings_ids,
             ingestor=ingestor,
             target_repo_path=target_repo_path,
         )
-        normalize_scoring_output(response_data)
+        response_data["run_id"] = str(uuid4())
+
         try:
-            scored_findings = extract_scored_findings(
-                org_tool_findings_ids=request.org_tool_findings_ids,
-                response_data=response_data,
-            )
-            updated_count = persist_org_tool_finding_scores(
+            persist_org_tool_finding_scores(
                 org_id=request.org_id,
                 scored_findings=scored_findings,
             )
-            if updated_count < len(scored_findings):
-                logger.warning(
-                    "Updated {} of {} org_tool_findings score rows for org_id={}",
-                    updated_count,
-                    len(scored_findings),
-                    request.org_id,
-                )
         except Exception as e:
-            # Don't fail chat response if score persistence fails.
             logger.warning("Failed to persist org_tool_findings scores: {}", e)
+
         payload = ChatResponsePayload.model_validate(response_data)
         return ChatResponse(response=payload)
     except ValueError as e:

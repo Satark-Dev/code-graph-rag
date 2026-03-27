@@ -449,5 +449,4 @@ class ChatOrchestratorService:
                 "token_usage": remediation_usage,
             },
             "models": models,
-            "schema_version": "1",
         }

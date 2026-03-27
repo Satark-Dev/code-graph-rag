@@ -75,7 +75,6 @@ class ChatModels(BaseModel):
 
 
 class ChatResponsePayload(BaseModel):
-    schema_version: str = "1"
     run_id: UUID
     evidence: EvidenceStage
     scoring: ScoringStage
