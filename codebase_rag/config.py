@@ -47,11 +47,6 @@ API_KEY_INFO: dict[str, ApiKeyInfoEntry] = {
         "url": "https://portal.azure.com/",
         "name": "Azure OpenAI",
     },
-    cs.Provider.COHERE: {
-        "env_var": "COHERE_API_KEY",
-        "url": "https://dashboard.cohere.com/api-keys",
-        "name": "Cohere",
-    },
 }
 
 
@@ -97,7 +92,7 @@ def format_missing_api_key_errors(
     return error_msg
 
 
-LOCAL_PROVIDERS = frozenset({cs.Provider.OLLAMA, cs.Provider.LOCAL, cs.Provider.VLLM})
+LOCAL_PROVIDERS = frozenset({cs.Provider.OLLAMA})
 
 
 @dataclass
