@@ -152,6 +152,7 @@ class AppConfig(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",
     )
 
     MEMGRAPH_HOST: str
@@ -191,6 +192,7 @@ class AppConfig(BaseSettings):
     CYPHER_SERVICE_ACCOUNT_FILE: str | None
 
     OLLAMA_BASE_URL: str
+    BACKEND_API_BASE_URL: str
 
     @property
     def ollama_endpoint(self) -> str:
@@ -204,11 +206,32 @@ class AppConfig(BaseSettings):
     SHELL_READ_ONLY_COMMANDS: frozenset[str]
     SHELL_SAFE_GIT_SUBCOMMANDS: frozenset[str]
 
-    PGVECTOR_HOST: str
-    PGVECTOR_PORT: int
-    PGVECTOR_USER: str
-    PGVECTOR_PASSWORD: str
-    PGVECTOR_DBNAME: str
+    # --- Postgres: Core DB (user_org) → region → org DB DSN only ---
+    # org_id must come from API request context.
+    CORE_DB_HOST: str | None = None
+    CORE_DB_PORT: int | None = None
+    CORE_DB_USER: str | None = None
+    CORE_DB_PASSWORD: str | None = None
+    CORE_DB_NAME: str | None = None
+    CORE_DB_SSL: str | None = None
+    ORG_DB_HOST_1: str | None = None
+    ORG_DB_PORT_1: int | None = None
+    ORG_DB_USER_1: str | None = None
+    ORG_DB_PASSWORD_1: str | None = None
+    ORG_DB_NAME_1: str | None = None
+    ORG_DB_SSL_1: str | None = None
+    ORG_DB_HOST_2: str | None = None
+    ORG_DB_PORT_2: int | None = None
+    ORG_DB_USER_2: str | None = None
+    ORG_DB_PASSWORD_2: str | None = None
+    ORG_DB_NAME_2: str | None = None
+    ORG_DB_SSL_2: str | None = None
+    DB_POOL_MIN_SIZE: int = 2
+    DB_POOL_MAX_SIZE: int = 10
+    DB_COMMAND_TIMEOUT: int = 60
+    DB_CONNECT_TIMEOUT: int = 30
+
+    # Table/schema settings for embeddings (DB host is resolved via org routing).
     PGVECTOR_TABLE_NAME: str
     PGVECTOR_DIM: int
     PGVECTOR_TOP_K: int
@@ -269,16 +292,39 @@ class AppConfig(BaseSettings):
         "CYPHER_THINKING_BUDGET",
         "CYPHER_SERVICE_ACCOUNT_FILE",
         "HF_TOKEN",
-        "PGVECTOR_HOST",
-        "PGVECTOR_USER",
-        "PGVECTOR_PASSWORD",
-        "PGVECTOR_DBNAME",
+        "CORE_DB_HOST",
+        "CORE_DB_USER",
+        "CORE_DB_PASSWORD",
+        "CORE_DB_NAME",
+        "CORE_DB_SSL",
+        "ORG_DB_HOST_1",
+        "ORG_DB_USER_1",
+        "ORG_DB_PASSWORD_1",
+        "ORG_DB_NAME_1",
+        "ORG_DB_SSL_1",
+        "ORG_DB_HOST_2",
+        "ORG_DB_USER_2",
+        "ORG_DB_PASSWORD_2",
+        "ORG_DB_NAME_2",
+        "ORG_DB_SSL_2",
         "PGVECTOR_TABLE_NAME",
         mode="before",
     )
     @classmethod
     def _empty_to_none(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator(
+        "CORE_DB_PORT",
+        "ORG_DB_PORT_1",
+        "ORG_DB_PORT_2",
+        mode="before",
+    )
+    @classmethod
+    def _optional_int_ports(cls, value: object) -> object:
+        if value == "" or value is None:
             return None
         return value
 
@@ -315,11 +361,8 @@ class AppConfig(BaseSettings):
         "CYPHER_MODEL",
         "CYPHER_REGION",
         "OLLAMA_BASE_URL",
+        "BACKEND_API_BASE_URL",
         "TARGET_REPO_PATH",
-        "PGVECTOR_HOST",
-        "PGVECTOR_USER",
-        "PGVECTOR_PASSWORD",
-        "PGVECTOR_DBNAME",
         "PGVECTOR_TABLE_NAME",
         "MCP_HTTP_HOST",
         "MCP_HTTP_ENDPOINT_PATH",
@@ -329,6 +372,13 @@ class AppConfig(BaseSettings):
     def _non_empty_strings(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             raise ValueError("Value must not be empty")
+        return value
+
+    @field_validator("PGVECTOR_TABLE_NAME")
+    @classmethod
+    def _validate_cgr_table_prefix(cls, value: str) -> str:
+        if not value.startswith("cgr_"):
+            raise ValueError("PGVECTOR_TABLE_NAME must start with 'cgr_'")
         return value
 
     def _get_default_config(self, role: str) -> ModelConfig:

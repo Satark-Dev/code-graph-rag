@@ -66,11 +66,6 @@ OUTPUT (ONE JSON OBJECT, NO PROSE)
 {
   "findings": [
     {
-      "finding_id": "...",
-      "tool": "...",
-      "vulnerability_type": "...",
-      "severity_reported": "...",
-      "file": "...",
       "justification": {
         "questions_and_answers": [
           {
@@ -101,7 +96,7 @@ RULES
 Findings JSON:"""
 
 # (H) Split analysis into 2 independent calls so they can run concurrently:
-# - scoring: verdict + score + breakdown + summary
+# - scoring: verdict + score + explanation + breakdown
 # - remediation: concrete fix guidance only
 API_SCORING_PROMPT = """You are a senior application security engineer. Use ONLY the evidence pack to score each finding.
 
@@ -112,14 +107,10 @@ OUTPUT (ONE JSON OBJECT, NO PROSE)
 {
   "findings": [
     {
-      "finding_id": "...",
-      "tool": "...",
-      "vulnerability_type": "...",
-      "severity_reported": "...",
-      "file": "...",
       "analysis": {
         "verdict": "True Positive | Likely True Positive | Uncertain | Likely False Positive | False Positive",
         "score": 0-100,
+        "explanation": "A concise, plain-language explanation for the score, written for non-security stakeholders.",
         "scoring_breakdown": {
           "reachability": { "score": 0-20, "reason": "..." },
           "exploitability": { "score": 0-20, "reason": "..." },
@@ -127,8 +118,7 @@ OUTPUT (ONE JSON OBJECT, NO PROSE)
           "control_coverage": { "score": 0-20, "reason": "..." },
           "dependency_risk": { "score": 0-15, "reason": "..." },
           "contextual_confidence": { "score": 0-10, "reason": "..." }
-        },
-        "summary": "..."
+        }
       }
     }
   ]
@@ -136,6 +126,7 @@ OUTPUT (ONE JSON OBJECT, NO PROSE)
 
 RULES
 * Use evidence_pack only. No new facts.
+* `explanation` must be human-readable, specific, and easy to understand in 1-3 sentences.
 * Escape " as \\\", \\ as \\\\, newline as \\n, tab as \\t.
 * No markdown, no extra keys, no trailing commas.
 
@@ -150,11 +141,6 @@ OUTPUT (ONE JSON OBJECT, NO PROSE)
 {
   "findings": [
     {
-      "finding_id": "...",
-      "tool": "...",
-      "vulnerability_type": "...",
-      "severity_reported": "...",
-      "file": "...",
       "remediation": {
         "priority": "Immediate | High | Medium | Low",
         "effort": "Low | Medium | High",

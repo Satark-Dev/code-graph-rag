@@ -6,34 +6,19 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class _AllowExtra(BaseModel):
-    model_config = ConfigDict(extra="allow")
+class _StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
-class EvidenceFinding(_AllowExtra):
-    finding_id: str
-    tool: str | None = None
-    vulnerability_type: str | None = None
-    severity_reported: str | None = None
-    file: str | None = None
+class EvidenceFinding(_StrictModel):
     justification: dict[str, Any]
 
 
-class ScoringFinding(_AllowExtra):
-    finding_id: str
-    tool: str | None = None
-    vulnerability_type: str | None = None
-    severity_reported: str | None = None
-    file: str | None = None
+class ScoringFinding(_StrictModel):
     analysis: dict[str, Any]
 
 
-class RemediationFinding(_AllowExtra):
-    finding_id: str
-    tool: str | None = None
-    vulnerability_type: str | None = None
-    severity_reported: str | None = None
-    file: str | None = None
+class RemediationFinding(_StrictModel):
     remediation: dict[str, Any]
 
 

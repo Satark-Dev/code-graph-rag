@@ -8,7 +8,7 @@ from . import logs as ls
 from .config import settings
 from .constants import PAYLOAD_NODE_ID, PAYLOAD_QUALIFIED_NAME
 from .utils.dependencies import has_pgvector
-from .utils.pg import PgInitKey, ensure_pg_initialized, pg_connect
+from .utils.pg import PgInitKey, ensure_pg_initialized, pg_connect, pg_init_key
 from .utils.pgvector_schema import ensure_pgvector_embeddings_schema
 
 if has_pgvector():
@@ -41,7 +41,7 @@ if has_pgvector():
             conn.close()
 
     def _ensure_db():
-        ensure_pg_initialized(PgInitKey.PGVECTOR_EMBEDDINGS, _init_db)
+        ensure_pg_initialized(pg_init_key(PgInitKey.PGVECTOR_EMBEDDINGS), _init_db)
 
     def _upsert_with_retry(points: list[tuple[int, list[float], dict]]) -> None:
         _ensure_db()

@@ -8,7 +8,7 @@ from loguru import logger
 
 from ..config import settings
 from ..utils.dependencies import has_pgvector
-from ..utils.pg import PgInitKey, ensure_pg_initialized, pg_connect
+from ..utils.pg import PgInitKey, ensure_pg_initialized, pg_connect, pg_init_key
 
 _TABLE_NAME = "cgr_tool_call_logs"
 
@@ -54,7 +54,7 @@ if has_pgvector():
             conn.close()
 
     def _ensure_db() -> None:
-        ensure_pg_initialized(PgInitKey.TOOL_CALL_STORE, _init_db)
+        ensure_pg_initialized(pg_init_key(PgInitKey.TOOL_CALL_STORE), _init_db)
 
     def new_run_id() -> str:
         return str(uuid.uuid4())
