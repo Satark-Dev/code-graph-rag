@@ -159,9 +159,7 @@ class FunctionRegistryTrie:
             # (H) O(1) lookup using the simple_name_lookup index
             return sorted(self._simple_name_lookup[suffix])
         # (H) Fallback to linear scan if no index available
-        return sorted(
-            qn for qn in self._entries.keys() if qn.endswith(f".{suffix}")
-        )
+        return sorted(qn for qn in self._entries.keys() if qn.endswith(f".{suffix}"))
 
     def find_with_prefix(self, prefix: str) -> list[tuple[QualifiedName, NodeType]]:
         node = self._navigate_to_prefix(prefix)
@@ -323,6 +321,10 @@ class GraphUpdater:
 
         logger.info(ls.PASS_2_FILES)
         self._process_files(force=force)
+
+        corrected = self.factory.definition_processor.resolve_deferred_cpp_methods()
+        if corrected:
+            logger.info("Resolved {} deferred C++ out-of-class methods", corrected)
 
         logger.info(ls.FOUND_FUNCTIONS, count=len(self.function_registry))
         logger.info(ls.PASS_3_CALLS)

@@ -20,9 +20,6 @@ class Provider(StrEnum):
     OPENAI = "openai"
     GOOGLE = "google"
     AZURE = "azure"
-    COHERE = "cohere"
-    LOCAL = "local"
-    VLLM = "vllm"
 
 
 class Color(StrEnum):
@@ -218,6 +215,10 @@ ONEOF_FILE = "file"
 ONEOF_EXTERNAL_PACKAGE = "external_package"
 ONEOF_MODULE_IMPLEMENTATION = "module_implementation"
 ONEOF_MODULE_INTERFACE = "module_interface"
+ONEOF_INTERFACE = "interface_node"
+ONEOF_ENUM = "enum_node"
+ONEOF_TYPE = "type_node"
+ONEOF_UNION = "union_node"
 
 # (H) CLI error and info messages
 CLI_ERR_OUTPUT_REQUIRES_UPDATE = (
@@ -907,6 +908,7 @@ REALTIME_LOGGER_FORMAT = (
 
 WATCHER_SLEEP_INTERVAL = 1
 LOG_LEVEL_INFO = "INFO"
+LOG_LEVEL_ERROR = "ERROR"
 
 # (H) Debounce settings for realtime watcher
 DEFAULT_DEBOUNCE_SECONDS = 5
@@ -2466,6 +2468,7 @@ class MCPToolName(StrEnum):
     WRITE_FILE = "write_file"
     LIST_DIRECTORY = "list_directory"
     SEMANTIC_SEARCH = "semantic_search"
+    ASK_AGENT = "ask_agent"
 
 
 # (H) MCP transport selection
@@ -2512,6 +2515,7 @@ class MCPParamName(StrEnum):
     CONTENT = "content"
     DIRECTORY_PATH = "directory_path"
     TOP_K = "top_k"
+    QUESTION = "question"
 
 
 # (H) MCP server constants
@@ -2535,6 +2539,7 @@ MCP_UPDATE_ERROR = "Error updating repository: {error}"
 MCP_SEMANTIC_NOT_AVAILABLE_RESPONSE = (
     "Semantic search is not available. Install with: uv sync --extra semantic"
 )
+MCP_ASK_AGENT_ERROR = "Error running ask_agent: {error}"
 MCP_PROJECT_DELETED = "Successfully deleted project '{project_name}'."
 MCP_WIPE_CANCELLED = "Database wipe cancelled. Set confirm=true to proceed."
 MCP_WIPE_SUCCESS = "Database completely wiped. All projects have been removed."
