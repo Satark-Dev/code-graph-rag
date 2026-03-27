@@ -241,6 +241,15 @@ class AppConfig(BaseSettings):
     SEMANTIC_SEARCH_ENABLED: bool
     SEMANTIC_SEARCH_EMPTY_COOLDOWN_SECONDS: int = Field(..., gt=0)
     SEMANTIC_SEARCH_REPEAT_COOLDOWN_SECONDS: int = Field(..., gt=0)
+    SEMANTIC_RERANK_ENABLED: bool = False
+    SEMANTIC_RERANK_CANDIDATES: int = Field(..., gt=0)
+    SEMANTIC_RERANK_PROVIDER: str
+    DEEPINFRA_API_KEY: str | None = None
+    DEEPINFRA_BASE_URL: str
+    DEEPINFRA_RERANK_MODEL: str
+    DEEPINFRA_TIMEOUT_SECONDS: float = Field(..., gt=0)
+    DEEPINFRA_MAX_RETRIES: int = Field(..., ge=0)
+    SERVICE_CACHE_MAX_ENTRIES: int = Field(..., gt=0)
 
     FLUSH_THREAD_POOL_SIZE: int = Field(..., gt=0)
     FILE_FLUSH_INTERVAL: int = Field(..., gt=0)

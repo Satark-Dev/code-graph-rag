@@ -23,6 +23,12 @@ from .parser_loader import load_parsers
 from .services.chat_orchestrator import ChatOrchestratorService
 from .services.chat_orchestrator import ChatStageError
 from .services.chat_batch_service import process_chat_for_findings_ids
+from .services.index_guard import (
+    RepoIndexQueryError,
+    RepoNotIndexedError,
+    assert_repo_indexed,
+)
+from .services.semantic_reranker import aclose_deepinfra_client
 from .chat_schemas import ApiErrorDetail, ApiErrorResponse, ChatResponsePayload
 from .request_context import org_id_context
 from .utils.dependencies import has_semantic_dependencies
@@ -95,6 +101,11 @@ async def lifespan(_app: FastAPI):
     if ingestor is not None:
         ingestor.__exit__(None, None, None)
 
+    try:
+        await aclose_deepinfra_client()
+    except Exception as e:
+        logger.warning("DeepInfra client shutdown failed: {}", e)
+
 
 app = FastAPI(
     title="Code Graph RAG API",
@@ -140,6 +151,7 @@ async def chat_endpoint(request: ChatRequest):
 
     ctx_token = org_id_context.set(request.org_id)
     try:
+        await assert_repo_indexed(ingestor=ingestor, target_repo_path=target_repo_path)
         response_data, scored_findings = await process_chat_for_findings_ids(
             org_id=request.org_id,
             org_tool_findings_ids=request.org_tool_findings_ids,
@@ -164,6 +176,16 @@ async def chat_endpoint(request: ChatRequest):
             error=ApiErrorDetail(code="BAD_REQUEST", message=str(e))
         )
         return JSONResponse(status_code=400, content=err.model_dump(mode="json"))
+    except RepoNotIndexedError as e:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Repository '{e.project_name}' is not indexed in Memgraph yet. "
+                "Run /api/index for this repo_path before using /api/chat."
+            ),
+        ) from e
+    except RepoIndexQueryError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to query Memgraph: {e}") from e
     except ChatStageError as e:
         # LLM/tooling failures or contract drift: treat as upstream failure.
         run_id: UUID | None = None

@@ -40,25 +40,43 @@ def create_query_tool(
     ) -> QueryGraphData:
         logger.info(ls.TOOL_QUERY_RECEIVED.format(query=natural_language_query))
         cypher_query = QUERY_NOT_AVAILABLE
-        try:
-            cypher_query = await cypher_gen.generate(natural_language_query)
-            cypher_query = CypherSanitizer.strip_comments(cypher_query)
 
-            if CypherSanitizer.contains_label_union(cypher_query):
-                cypher_query = await cypher_gen.generate(
-                    CypherSanitizer.append_memgraph_constraints(natural_language_query)
+        def _sanitize(q: str) -> str:
+            q = CypherSanitizer.strip_comments(q)
+            if CypherSanitizer.contains_property_exists(q):
+                q = CypherSanitizer.replace_property_exists(q)
+            if CypherSanitizer.contains_match_after_optional(q):
+                q = CypherSanitizer.rewrite_match_after_optional(q)
+            q = CypherSanitizer.rewrite_tautologies(q)
+            q = CypherSanitizer.ensure_return_distinct(q)
+            return CypherSanitizer.first_statement(q)
+
+        async def _generate_once(prompt: str) -> str:
+            q = await cypher_gen.generate(prompt)
+            q = CypherSanitizer.strip_comments(q)
+            if CypherSanitizer.contains_union_syntax(q):
+                raise ex.LLMGenerationError(
+                    "Generated Cypher uses union syntax (e.g., :A|B or [:A|B]). "
+                    "Memgraph does not accept this syntax."
                 )
-                cypher_query = CypherSanitizer.strip_comments(cypher_query)
-                if CypherSanitizer.contains_label_union(cypher_query):
-                    raise ex.LLMGenerationError(
-                        "Generated Cypher uses label unions (e.g., :A|B). "
-                        "Memgraph does not accept this syntax."
-                    )
+            if CypherSanitizer.contains_bare_node_match(q):
+                raise ex.LLMGenerationError("Generated Cypher contains standalone MATCH (n).")
+            return q
 
-            if CypherSanitizer.contains_property_exists(cypher_query):
-                cypher_query = CypherSanitizer.replace_property_exists(cypher_query)
+        async def _generate_with_retries(nl: str) -> str:
+            """
+            Prefer constrained prompts to reduce invalid Memgraph Cypher.
+            Falls back to STRICT MODE only if constraints still fail.
+            """
+            try:
+                return await _generate_once(CypherSanitizer.append_memgraph_constraints(nl))
+            except ex.LLMGenerationError:
+                return await _generate_once(CypherSanitizer.append_memgraph_strict_constraints(nl))
 
-            cypher_query = CypherSanitizer.first_statement(cypher_query)
+        try:
+            cypher_query = await _generate_with_retries(natural_language_query)
+
+            cypher_query = _sanitize(cypher_query)
 
             results = await asyncio.to_thread(ingestor.fetch_all, cypher_query)
 

@@ -68,7 +68,7 @@ class JsTypeInferenceEngine:
                                     var_type=var_type,
                                 )
                             else:
-                                logger.debug(ls.JS_VAR_INFER_FAILED, var_name=var_name)
+                                logger.trace(ls.JS_VAR_INFER_FAILED, var_name=var_name)
 
             stack.extend(reversed(current.children))
 
@@ -107,7 +107,7 @@ class JsTypeInferenceEngine:
                             inferred_type=inferred_type,
                         )
                         return inferred_type
-                    logger.debug(
+                    logger.trace(
                         ls.JS_RETURN_TYPE_INFER_FAILED, method_call=method_call_text
                     )
 
@@ -116,7 +116,7 @@ class JsTypeInferenceEngine:
                 if func_name:
                     return safe_decode_text(func_node)
 
-        logger.debug(ls.JS_NO_PATTERN_MATCHED, node_type=value_node.type)
+        logger.trace(ls.JS_NO_PATTERN_MATCHED, node_type=value_node.type)
         return None
 
     def _infer_js_method_return_type(
@@ -124,14 +124,14 @@ class JsTypeInferenceEngine:
     ) -> str | None:
         parts = method_call.split(cs.SEPARATOR_DOT)
         if len(parts) != 2:
-            logger.debug(ls.JS_METHOD_CALL_INVALID, method_call=method_call)
+            logger.trace(ls.JS_METHOD_CALL_INVALID, method_call=method_call)
             return None
 
         class_name, method_name = parts
 
         class_qn = self._resolve_js_class_name(class_name, module_qn)
         if not class_qn:
-            logger.debug(
+            logger.trace(
                 ls.JS_CLASS_RESOLVE_FAILED, class_name=class_name, module_qn=module_qn
             )
             return None
@@ -143,7 +143,7 @@ class JsTypeInferenceEngine:
 
         method_node = self._find_method_ast_node(method_qn)
         if not method_node:
-            logger.debug(ls.JS_METHOD_AST_NOT_FOUND, method_qn=method_qn)
+            logger.trace(ls.JS_METHOD_AST_NOT_FOUND, method_qn=method_qn)
             return None
 
         return_type = self._analyze_return_statements(method_node, method_qn)

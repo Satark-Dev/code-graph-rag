@@ -7,6 +7,7 @@ import os
 import shlex
 import shutil
 import sys
+import threading
 import uuid
 from collections import deque
 from collections.abc import Coroutine
@@ -63,12 +64,52 @@ from .types_defs import (
     ToolArgs,
 )
 from .utils.dependencies import has_semantic_dependencies
+from .utils.cache import EvictingCache
 
 if TYPE_CHECKING:
     from prompt_toolkit.key_binding import KeyPressEvent
     from pydantic_ai import Agent
     from pydantic_ai.messages import ModelMessage
     from pydantic_ai.models import Model
+
+
+class _ServiceBundle:
+    __slots__ = (
+        "code_retriever",
+        "file_reader",
+        "file_writer",
+        "file_editor",
+        "shell_commander",
+        "directory_lister",
+        "document_analyzer",
+    )
+
+    def __init__(
+        self,
+        *,
+        code_retriever: CodeRetriever,
+        file_reader: FileReader,
+        file_writer: FileWriter,
+        file_editor: FileEditor,
+        shell_commander: ShellCommander,
+        directory_lister: DirectoryLister,
+        document_analyzer: DocumentAnalyzer,
+    ) -> None:
+        self.code_retriever = code_retriever
+        self.file_reader = file_reader
+        self.file_writer = file_writer
+        self.file_editor = file_editor
+        self.shell_commander = shell_commander
+        self.directory_lister = directory_lister
+        self.document_analyzer = document_analyzer
+
+
+_SERVICE_CACHE_LOCK = threading.Lock()
+_SERVICE_CACHE = EvictingCache[tuple[str, int], _ServiceBundle](
+    max_entries=settings.SERVICE_CACHE_MAX_ENTRIES,
+    max_size=10**18,  # effectively disabled; LRU by entry count
+    size_func=lambda _v: 1,
+)
 
 
 def style(
@@ -997,15 +1038,32 @@ def _initialize_services_and_agent(
     _validate_provider_config(cs.ModelRole.CYPHER, settings.active_cypher_config)
 
     cypher_generator = CypherGenerator()
-    code_retriever = CodeRetriever(project_root=repo_path, ingestor=ingestor)
-    file_reader = FileReader(project_root=repo_path)
-    file_writer = FileWriter(project_root=repo_path)
-    file_editor = FileEditor(project_root=repo_path)
-    shell_commander = ShellCommander(
-        project_root=repo_path, timeout=settings.SHELL_COMMAND_TIMEOUT
-    )
-    directory_lister = DirectoryLister(project_root=repo_path)
-    document_analyzer = DocumentAnalyzer(project_root=repo_path)
+
+    repo_key = str(Path(repo_path).resolve())
+    cache_key = (repo_key, id(ingestor))
+    with _SERVICE_CACHE_LOCK:
+        bundle = _SERVICE_CACHE.get(cache_key)
+        if bundle is None:
+            bundle = _ServiceBundle(
+                code_retriever=CodeRetriever(project_root=repo_key, ingestor=ingestor),
+                file_reader=FileReader(project_root=repo_key),
+                file_writer=FileWriter(project_root=repo_key),
+                file_editor=FileEditor(project_root=repo_key),
+                shell_commander=ShellCommander(
+                    project_root=repo_key, timeout=settings.SHELL_COMMAND_TIMEOUT
+                ),
+                directory_lister=DirectoryLister(project_root=repo_key),
+                document_analyzer=DocumentAnalyzer(project_root=repo_key),
+            )
+            _SERVICE_CACHE.put(cache_key, bundle)
+
+    code_retriever = bundle.code_retriever
+    file_reader = bundle.file_reader
+    file_writer = bundle.file_writer
+    file_editor = bundle.file_editor
+    shell_commander = bundle.shell_commander
+    directory_lister = bundle.directory_lister
+    document_analyzer = bundle.document_analyzer
 
     query_tool = create_query_tool(ingestor, cypher_generator, app_context.console)
     code_tool = create_code_retrieval_tool(code_retriever)

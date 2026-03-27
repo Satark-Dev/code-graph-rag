@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 
 from loguru import logger
@@ -18,7 +19,7 @@ from ..utils.dependencies import has_semantic_dependencies
 from . import tool_descriptions as td
 
 
-def semantic_code_search(
+async def semantic_code_search_async(
     query: str, top_k: int = 5, ingestor: QueryProtocol | None = None
 ) -> list[SemanticSearchResult]:
     if not has_semantic_dependencies():
@@ -28,11 +29,16 @@ def semantic_code_search(
     try:
         from ..config import settings
         from ..embedder import embed_code
+        from ..services.semantic_reranker import rerank_semantic_results
         from ..vector_store import search_embeddings
 
         query_embedding = embed_code(query)
 
-        search_results = search_embeddings(query_embedding, top_k=top_k)
+        candidate_k = top_k
+        if settings.SEMANTIC_RERANK_ENABLED:
+            candidate_k = max(int(top_k), int(settings.SEMANTIC_RERANK_CANDIDATES))
+
+        search_results = search_embeddings(query_embedding, top_k=candidate_k)
 
         if not search_results:
             logger.info(ls.SEMANTIC_NO_MATCH.format(query=query))
@@ -81,10 +87,30 @@ def semantic_code_search(
                         )
                     )
 
+            if settings.SEMANTIC_RERANK_ENABLED and formatted_results:
+                ordered_ids = await rerank_semantic_results(
+                    query=query, candidates=formatted_results, top_k=top_k
+                )
+                if ordered_ids:
+                    by_id = {int(r["node_id"]): r for r in formatted_results}
+                    reranked: list[SemanticSearchResult] = []
+                    for nid in ordered_ids:
+                        if nid in by_id:
+                            reranked.append(by_id[nid])
+                    if len(reranked) < top_k:
+                        seen = {int(r["node_id"]) for r in reranked}
+                        for r in formatted_results:
+                            rid = int(r["node_id"])
+                            if rid not in seen:
+                                reranked.append(r)
+                            if len(reranked) >= top_k:
+                                break
+                    formatted_results = reranked
+
             logger.info(
                 ls.SEMANTIC_FOUND.format(count=len(formatted_results), query=query)
             )
-            return formatted_results
+            return formatted_results[:top_k]
         finally:
             if should_close:
                 ingestor.__exit__(None, None, None)
@@ -92,6 +118,21 @@ def semantic_code_search(
     except Exception as e:
         logger.error(ls.SEMANTIC_FAILED.format(query=query, error=e))
         return []
+
+
+def semantic_code_search(
+    query: str, top_k: int = 5, ingestor: QueryProtocol | None = None
+) -> list[SemanticSearchResult]:
+    """
+    Sync wrapper for semantic search (and optional rerank).
+
+    Prefer `semantic_code_search_async` when already in an event loop.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(semantic_code_search_async(query, top_k, ingestor=ingestor))
+    return []
 
 
 def get_function_source_code(
@@ -176,7 +217,7 @@ def create_semantic_search_tool(ingestor: QueryProtocol | None = None) -> Tool:
         ):
             return cs.MSG_SEMANTIC_NO_RESULTS.format(query=query)
 
-        results = semantic_code_search(query, top_k, ingestor=ingestor)
+        results = await semantic_code_search_async(query, top_k, ingestor=ingestor)
         last_any_query = query
         last_any_ts = now
 

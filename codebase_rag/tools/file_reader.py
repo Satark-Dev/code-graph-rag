@@ -38,11 +38,6 @@ class FileReader:
     @validate_project_path(FileReadResult, path_arg_name="file_path")
     async def _read_validated(self, file_path: Path) -> FileReadResult:
         try:
-            cache_key = str(file_path)
-            if cached_content := self._cache.get(cache_key):
-                logger.info(ls.TOOL_FILE_READ_SUCCESS.format(path=file_path))
-                return FileReadResult(file_path=cache_key, content=cached_content)
-
             if not file_path.is_file():
                 return FileReadResult(
                     file_path=str(file_path), error_message=te.FILE_NOT_FOUND
@@ -54,6 +49,12 @@ class FileReader:
                 return FileReadResult(file_path=str(file_path), error_message=error_msg)
 
             try:
+                mtime_ns = file_path.stat().st_mtime_ns
+                cache_key = f"{file_path}:{mtime_ns}"
+                if cached_content := self._cache.get(cache_key):
+                    logger.info(ls.TOOL_FILE_READ_SUCCESS.format(path=file_path))
+                    return FileReadResult(file_path=str(file_path), content=cached_content)
+
                 content = file_path.read_text(encoding=cs.ENCODING_UTF8)
                 if len(content) > settings.MAX_FILE_READ_CHARS:
                     content = (

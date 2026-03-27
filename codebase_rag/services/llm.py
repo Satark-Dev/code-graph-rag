@@ -73,7 +73,17 @@ def _build_keyword_pattern(keyword: str) -> re.Pattern[str]:
     parts = keyword.split()
     if len(parts) == 1:
         if parts[0].upper() == "CALL":
-            return re.compile(r"\bCALL\s", re.IGNORECASE)
+            # `CALL` is dangerous as a Cypher clause, but don't false-positive on identifiers like
+            # `call` used as a variable (e.g., `WITH ..., call\nMATCH ...`).
+            # We only match when `CALL` is used like a clause and is followed by something that
+            # doesn't look like another clause keyword.
+            return re.compile(
+                r"\bCALL\b"
+                + _COMMENT_OR_WS
+                + r"(?!MATCH\b|WITH\b|RETURN\b|WHERE\b|OPTIONAL\b|UNWIND\b)"
+                + r"[A-Za-z_`]",
+                re.IGNORECASE | re.DOTALL,
+            )
         return re.compile(rf"\b{re.escape(parts[0])}\b")
     joined = _COMMENT_OR_WS.join(re.escape(p) for p in parts)
     return re.compile(rf"\b{joined}\b", re.DOTALL)
