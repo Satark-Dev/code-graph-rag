@@ -503,7 +503,7 @@ wheels = [
 
 [[package]]
 name = "code-graph-rag"
-version = "0.0.173"
+version = "0.0.175"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
@@ -584,7 +584,7 @@ fuzz = [
 
 [package.metadata]
 requires-dist = [
-    { name = "click", specifier = ">=8.0.0" },
+    { name = "click", specifier = ">=8.3.1" },
     { name = "defusedxml", specifier = ">=0.7.1" },
     { name = "diff-match-patch", specifier = ">=20241021" },
     { name = "fastapi", specifier = ">=0.111.0" },
@@ -596,8 +596,8 @@ requires-dist = [
     { name = "protobuf", specifier = ">=5.27.0" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'semantic'", specifier = ">=3.2.3" },
     { name = "pydantic-ai", specifier = ">=1.70.0" },
-    { name = "pydantic-settings", specifier = ">=2.0.0" },
-    { name = "pymgclient", specifier = ">=1.4.0" },
+    { name = "pydantic-settings", specifier = ">=2.12.0" },
+    { name = "pymgclient", specifier = ">=1.5.1" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.4.1" },
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=1.0.0" },
     { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=4.0.0" },
@@ -617,7 +617,7 @@ requires-dist = [
     { name = "tree-sitter-javascript", marker = "extra == 'treesitter-full'", specifier = ">=0.23.1" },
     { name = "tree-sitter-lua", marker = "extra == 'treesitter-full'", specifier = ">=0.0.19" },
     { name = "tree-sitter-php", marker = "extra == 'treesitter-full'", specifier = ">=0.24.1" },
-    { name = "tree-sitter-python", specifier = ">=0.23.6" },
+    { name = "tree-sitter-python", specifier = ">=0.25.0" },
     { name = "tree-sitter-python", marker = "extra == 'treesitter-full'", specifier = ">=0.23.6" },
     { name = "tree-sitter-rust", marker = "extra == 'treesitter-full'", specifier = ">=0.24.0" },
     { name = "tree-sitter-scala", marker = "extra == 'treesitter-full'", specifier = ">=0.24.0" },
