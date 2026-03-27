@@ -3,6 +3,7 @@ import subprocess
 import sys
 from copy import deepcopy
 from pathlib import Path
+import threading
 
 from loguru import logger
 from tree_sitter import Language, Parser, Query
@@ -287,6 +288,21 @@ def _process_language(
 def load_parsers() -> tuple[
     dict[cs.SupportedLanguage, Parser], dict[cs.SupportedLanguage, LanguageQueries]
 ]:
+    """
+    Load and initialize all available Tree-sitter parsers and queries.
+
+    This is relatively expensive (language + query compilation). We cache the result
+    per process to avoid repeated initialization in API flows that run per-finding
+    pipelines in parallel.
+    """
+    global _CACHED_PARSERS_AND_QUERIES
+    if _CACHED_PARSERS_AND_QUERIES is not None:
+        return _CACHED_PARSERS_AND_QUERIES
+
+    with _LOAD_PARSERS_LOCK:
+        if _CACHED_PARSERS_AND_QUERIES is not None:
+            return _CACHED_PARSERS_AND_QUERIES
+
     parsers: dict[cs.SupportedLanguage, Parser] = {}
     queries: dict[cs.SupportedLanguage, LanguageQueries] = {}
     available_languages: list[cs.SupportedLanguage] = []
@@ -300,4 +316,12 @@ def load_parsers() -> tuple[
         raise RuntimeError(ex.NO_LANGUAGES)
 
     logger.info(ls.INITIALIZED_PARSERS.format(languages=", ".join(available_languages)))
-    return parsers, queries
+    _CACHED_PARSERS_AND_QUERIES = (parsers, queries)
+    return _CACHED_PARSERS_AND_QUERIES
+
+
+_LOAD_PARSERS_LOCK = threading.Lock()
+_CACHED_PARSERS_AND_QUERIES: (
+    tuple[dict[cs.SupportedLanguage, Parser], dict[cs.SupportedLanguage, LanguageQueries]]
+    | None
+) = None

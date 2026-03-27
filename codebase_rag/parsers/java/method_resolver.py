@@ -100,6 +100,23 @@ class JavaMethodResolverMixin:
         parent_classes = self.class_inheritance.get(class_qn, [])
         return parent_classes[0] if parent_classes else None
 
+    def _resolve_imported_static_method(
+        self, object_ref: str, method_name: str, module_qn: str
+    ) -> tuple[str, str] | None:
+        """
+        Resolve `ClassName.staticMethod()` for imported classes.
+
+        Java static calls are represented as method_invocation with an object reference,
+        but that object is a class symbol (not an instance variable).
+        """
+        import_map = self.import_processor.import_mapping.get(module_qn, {})
+        imported_qn = import_map.get(object_ref)
+        if not imported_qn:
+            return None
+        return self._find_method_with_any_signature(
+            str(imported_qn), str(method_name), module_qn
+        )
+
     def _resolve_static_or_local_method(
         self, method_name: str, module_qn: str
     ) -> tuple[str, str] | None:
@@ -364,8 +381,16 @@ class JavaMethodResolverMixin:
             if result:
                 logger.debug(ls.JAVA_FOUND_STATIC, result=result)
             else:
-                logger.debug(ls.JAVA_STATIC_NOT_FOUND, method=method_name)
+                logger.trace(ls.JAVA_STATIC_NOT_FOUND, method=method_name)
             return result
+
+        if object_ref not in local_var_types:
+            imported_static = self._resolve_imported_static_method(
+                str(object_ref), str(method_name), module_qn
+            )
+            if imported_static:
+                logger.debug(ls.JAVA_FOUND_STATIC, result=imported_static)
+                return imported_static
 
         logger.debug(ls.JAVA_RESOLVING_OBJ_TYPE, object=object_ref)
         if not (
@@ -373,7 +398,7 @@ class JavaMethodResolverMixin:
                 str(object_ref), local_var_types, module_qn
             )
         ):
-            logger.debug(ls.JAVA_OBJ_TYPE_UNKNOWN, object=object_ref)
+            logger.trace(ls.JAVA_OBJ_TYPE_UNKNOWN, object=object_ref)
             return None
 
         logger.debug(ls.JAVA_OBJ_TYPE_RESOLVED, type=object_type)
@@ -381,7 +406,7 @@ class JavaMethodResolverMixin:
         if result:
             logger.debug(ls.JAVA_FOUND_INSTANCE, result=result)
         else:
-            logger.debug(
+            logger.trace(
                 ls.JAVA_INSTANCE_NOT_FOUND, type=object_type, method=method_name
             )
         return result

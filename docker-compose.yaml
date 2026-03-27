@@ -10,3 +10,4 @@ services:
       - "${LAB_PORT:-3000}:3000"
     environment:
       QUICK_CONNECT_MG_HOST: memgraph
+

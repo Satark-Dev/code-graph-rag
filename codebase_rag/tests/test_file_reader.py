@@ -151,6 +151,21 @@ class TestReadFile:
         assert result.content == "Nested content"
         assert result.error_message is None
 
+    async def test_read_file_cache_invalidates_on_mtime_change(
+        self, file_reader: FileReader, temp_project_root: Path
+    ) -> None:
+        p = temp_project_root / "changing.txt"
+        p.write_text("v1", encoding="utf-8")
+
+        r1 = await file_reader.read_file("changing.txt")
+        assert r1.content == "v1"
+
+        # Update file; mtime_ns should change on most filesystems.
+        p.write_text("v2", encoding="utf-8")
+
+        r2 = await file_reader.read_file("changing.txt")
+        assert r2.content == "v2"
+
     async def test_read_directory_returns_error(
         self, file_reader: FileReader, temp_project_root: Path
     ) -> None:

@@ -7,6 +7,7 @@ import os
 import shlex
 import shutil
 import sys
+import threading
 import uuid
 from collections import deque
 from collections.abc import Coroutine
@@ -62,12 +63,53 @@ from .types_defs import (
     ShellCommandArgs,
     ToolArgs,
 )
+from .utils.dependencies import has_semantic_dependencies
+from .utils.cache import EvictingCache
 
 if TYPE_CHECKING:
     from prompt_toolkit.key_binding import KeyPressEvent
     from pydantic_ai import Agent
     from pydantic_ai.messages import ModelMessage
     from pydantic_ai.models import Model
+
+
+class _ServiceBundle:
+    __slots__ = (
+        "code_retriever",
+        "file_reader",
+        "file_writer",
+        "file_editor",
+        "shell_commander",
+        "directory_lister",
+        "document_analyzer",
+    )
+
+    def __init__(
+        self,
+        *,
+        code_retriever: CodeRetriever,
+        file_reader: FileReader,
+        file_writer: FileWriter,
+        file_editor: FileEditor,
+        shell_commander: ShellCommander,
+        directory_lister: DirectoryLister,
+        document_analyzer: DocumentAnalyzer,
+    ) -> None:
+        self.code_retriever = code_retriever
+        self.file_reader = file_reader
+        self.file_writer = file_writer
+        self.file_editor = file_editor
+        self.shell_commander = shell_commander
+        self.directory_lister = directory_lister
+        self.document_analyzer = document_analyzer
+
+
+_SERVICE_CACHE_LOCK = threading.Lock()
+_SERVICE_CACHE = EvictingCache[tuple[str, int], _ServiceBundle](
+    max_entries=settings.SERVICE_CACHE_MAX_ENTRIES,
+    max_size=10**18,  # effectively disabled; LRU by entry count
+    size_func=lambda _v: 1,
+)
 
 
 def style(
@@ -263,6 +305,21 @@ def _setup_common_initialization(repo_path: str) -> Path:
     tmp_dir.mkdir()
 
     return project_root
+
+
+def _prewarm_semantic_model() -> None:
+    if not settings.SEMANTIC_SEARCH_ENABLED:
+        return
+    if not has_semantic_dependencies():
+        return
+    try:
+        from .embedder import prewarm_embeddings
+
+        logger.info(ls.SEMANTIC_PREWARM_START)
+        prewarm_embeddings()
+        logger.info(ls.SEMANTIC_PREWARM_COMPLETE)
+    except Exception as e:
+        logger.warning(ls.SEMANTIC_PREWARM_FAILED.format(error=e))
 
 
 def _create_configuration_table(
@@ -971,7 +1028,9 @@ def _validate_provider_config(role: cs.ModelRole, config: ModelConfig) -> None:
 
 
 def _initialize_services_and_agent(
-    repo_path: str, ingestor: QueryProtocol
+    repo_path: str,
+    ingestor: QueryProtocol,
+    system_prompt: str | None = None,
 ) -> tuple[Agent[None, str | DeferredToolRequests], ConfirmationToolNames]:
     _validate_provider_config(
         cs.ModelRole.ORCHESTRATOR, settings.active_orchestrator_config
@@ -979,15 +1038,32 @@ def _initialize_services_and_agent(
     _validate_provider_config(cs.ModelRole.CYPHER, settings.active_cypher_config)
 
     cypher_generator = CypherGenerator()
-    code_retriever = CodeRetriever(project_root=repo_path, ingestor=ingestor)
-    file_reader = FileReader(project_root=repo_path)
-    file_writer = FileWriter(project_root=repo_path)
-    file_editor = FileEditor(project_root=repo_path)
-    shell_commander = ShellCommander(
-        project_root=repo_path, timeout=settings.SHELL_COMMAND_TIMEOUT
-    )
-    directory_lister = DirectoryLister(project_root=repo_path)
-    document_analyzer = DocumentAnalyzer(project_root=repo_path)
+
+    repo_key = str(Path(repo_path).resolve())
+    cache_key = (repo_key, id(ingestor))
+    with _SERVICE_CACHE_LOCK:
+        bundle = _SERVICE_CACHE.get(cache_key)
+        if bundle is None:
+            bundle = _ServiceBundle(
+                code_retriever=CodeRetriever(project_root=repo_key, ingestor=ingestor),
+                file_reader=FileReader(project_root=repo_key),
+                file_writer=FileWriter(project_root=repo_key),
+                file_editor=FileEditor(project_root=repo_key),
+                shell_commander=ShellCommander(
+                    project_root=repo_key, timeout=settings.SHELL_COMMAND_TIMEOUT
+                ),
+                directory_lister=DirectoryLister(project_root=repo_key),
+                document_analyzer=DocumentAnalyzer(project_root=repo_key),
+            )
+            _SERVICE_CACHE.put(cache_key, bundle)
+
+    code_retriever = bundle.code_retriever
+    file_reader = bundle.file_reader
+    file_writer = bundle.file_writer
+    file_editor = bundle.file_editor
+    shell_commander = bundle.shell_commander
+    directory_lister = bundle.directory_lister
+    document_analyzer = bundle.document_analyzer
 
     query_tool = create_query_tool(ingestor, cypher_generator, app_context.console)
     code_tool = create_code_retrieval_tool(code_retriever)
@@ -997,8 +1073,8 @@ def _initialize_services_and_agent(
     shell_command_tool = create_shell_command_tool(shell_commander)
     directory_lister_tool = create_directory_lister_tool(directory_lister)
     document_analyzer_tool = create_document_analyzer_tool(document_analyzer)
-    semantic_search_tool = create_semantic_search_tool()
-    function_source_tool = create_get_function_source_tool()
+    semantic_search_tool = create_semantic_search_tool(ingestor=ingestor)
+    function_source_tool = create_get_function_source_tool(ingestor=ingestor)
 
     confirmation_tool_names = ConfirmationToolNames(
         replace_code=file_editor_tool.name,
@@ -1018,7 +1094,8 @@ def _initialize_services_and_agent(
             document_analyzer_tool,
             semantic_search_tool,
             function_source_tool,
-        ]
+        ],
+        system_prompt=system_prompt,
     )
     return rag_agent, confirmation_tool_names
 
@@ -1051,6 +1128,7 @@ async def main_async(repo_path: str, batch_size: int) -> None:
         )
 
         rag_agent, tool_names = _initialize_services_and_agent(repo_path, ingestor)
+        _prewarm_semantic_model()
         await run_chat_loop(rag_agent, [], project_root, tool_names)
 
 

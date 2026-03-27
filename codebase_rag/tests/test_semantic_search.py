@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from codebase_rag.utils.dependencies import has_semantic_dependencies
+
+pytestmark = [pytest.mark.anyio]
 
 
 @pytest.fixture
@@ -26,7 +28,7 @@ def mock_ingestor() -> MagicMock:
     mock = MagicMock()
     mock.__enter__ = MagicMock(return_value=mock)
     mock.__exit__ = MagicMock(return_value=False)
-    mock._execute_query.return_value = [
+    mock.fetch_all.return_value = [
         {
             "node_id": 1,
             "qualified_name": "project.module.func1",
@@ -118,6 +120,7 @@ def test_semantic_code_search_passes_top_k_to_search(
     mock_ingestor: MagicMock,
 ) -> None:
     from codebase_rag.tools.semantic_search import semantic_code_search
+    from codebase_rag.config import settings
 
     with (
         patch("codebase_rag.embedder.embed_code", mock_embed_code),
@@ -126,10 +129,127 @@ def test_semantic_code_search_passes_top_k_to_search(
             "codebase_rag.services.graph_service.MemgraphIngestor",
             return_value=mock_ingestor,
         ),
+        patch.object(settings, "SEMANTIC_RERANK_ENABLED", False),
     ):
         semantic_code_search("file handling", top_k=10)
 
     mock_search_embeddings.assert_called_once_with([0.1] * 768, top_k=10)
+
+
+@pytest.mark.skipif(
+    not has_semantic_dependencies(), reason="semantic dependencies not installed"
+)
+def test_semantic_code_search_overfetches_when_rerank_enabled(
+    mock_embed_code: MagicMock,
+    mock_search_embeddings: MagicMock,
+    mock_ingestor: MagicMock,
+) -> None:
+    from codebase_rag.config import settings
+    from codebase_rag.tools.semantic_search import semantic_code_search
+
+    with (
+        patch("codebase_rag.embedder.embed_code", mock_embed_code),
+        patch("codebase_rag.vector_store.search_embeddings", mock_search_embeddings),
+        patch(
+            "codebase_rag.services.graph_service.MemgraphIngestor",
+            return_value=mock_ingestor,
+        ),
+        patch.object(settings, "SEMANTIC_RERANK_ENABLED", True),
+        patch.object(settings, "SEMANTIC_RERANK_CANDIDATES", 20),
+        patch(
+            "codebase_rag.services.semantic_reranker.rerank_semantic_results",
+            AsyncMock(return_value=[1, 2, 3]),
+        ),
+    ):
+        semantic_code_search("file handling", top_k=10)
+
+    mock_search_embeddings.assert_called_once_with([0.1] * 768, top_k=20)
+
+
+@pytest.mark.skipif(
+    not has_semantic_dependencies(), reason="semantic dependencies not installed"
+)
+def test_semantic_code_search_applies_rerank_order(
+    mock_embed_code: MagicMock,
+    mock_ingestor: MagicMock,
+) -> None:
+    from codebase_rag.config import settings
+    from codebase_rag.tools.semantic_search import semantic_code_search
+
+    mock_search = MagicMock(return_value=[(1, 0.99), (2, 0.80), (3, 0.70)])
+
+    with (
+        patch("codebase_rag.embedder.embed_code", mock_embed_code),
+        patch("codebase_rag.vector_store.search_embeddings", mock_search),
+        patch(
+            "codebase_rag.services.graph_service.MemgraphIngestor",
+            return_value=mock_ingestor,
+        ),
+        patch.object(settings, "SEMANTIC_RERANK_ENABLED", True),
+        patch.object(settings, "SEMANTIC_RERANK_CANDIDATES", 3),
+        patch(
+            "codebase_rag.services.semantic_reranker.rerank_semantic_results",
+            AsyncMock(return_value=[2, 1, 3]),
+        ),
+    ):
+        results = semantic_code_search("test query", top_k=2)
+
+    assert [r["node_id"] for r in results] == [2, 1]
+
+
+@pytest.mark.skipif(
+    not has_semantic_dependencies(), reason="semantic dependencies not installed"
+)
+@pytest.mark.anyio
+async def test_deepinfra_reranker_sorts_by_score() -> None:
+    from codebase_rag.config import settings
+    from codebase_rag.services.semantic_reranker import rerank_semantic_results
+
+    candidates = [
+        {"node_id": 1, "qualified_name": "a.A", "name": "A", "type": "Class", "score": 0.1},
+        {"node_id": 2, "qualified_name": "b.B", "name": "B", "type": "Class", "score": 0.2},
+        {"node_id": 3, "qualified_name": "c.C", "name": "C", "type": "Class", "score": 0.3},
+    ]
+
+    class _Resp:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {"scores": [0.2, 0.9, 0.1]}
+
+    async def _post(_url, json=None, headers=None):
+        assert isinstance(json, dict)
+        assert "queries" in json and "documents" in json
+        assert len(json["queries"]) == len(json["documents"]) == 3
+        return _Resp()
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        post = staticmethod(_post)
+
+    with (
+        patch.object(settings, "SEMANTIC_RERANK_PROVIDER", "deepinfra"),
+        patch.object(settings, "DEEPINFRA_API_KEY", "test-token"),
+        patch.object(settings, "DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/inference"),
+        patch.object(settings, "DEEPINFRA_RERANK_MODEL", "Qwen/Qwen3-Reranker-4B"),
+        patch.object(settings, "DEEPINFRA_TIMEOUT_SECONDS", 1.0),
+        patch.object(settings, "DEEPINFRA_MAX_RETRIES", 0),
+        patch("httpx.AsyncClient", _Client),
+    ):
+        ordered = await rerank_semantic_results(query="q", candidates=candidates, top_k=2)
+
+    assert ordered == [2, 1]
 
 
 @pytest.mark.skipif(
@@ -198,7 +318,7 @@ def test_semantic_code_search_preserves_score_order(
 def test_get_function_source_code_returns_source(mock_ingestor: MagicMock) -> None:
     from codebase_rag.tools.semantic_search import get_function_source_code
 
-    mock_ingestor._execute_query.return_value = [
+    mock_ingestor.fetch_all.return_value = [
         {
             "qualified_name": "project.module.func",
             "start_line": 10,
@@ -236,7 +356,7 @@ def test_get_function_source_code_returns_none_when_not_found(
 ) -> None:
     from codebase_rag.tools.semantic_search import get_function_source_code
 
-    mock_ingestor._execute_query.return_value = []
+    mock_ingestor.fetch_all.return_value = []
 
     with patch(
         "codebase_rag.services.graph_service.MemgraphIngestor",
@@ -255,7 +375,7 @@ def test_get_function_source_code_returns_none_on_invalid_location(
 ) -> None:
     from codebase_rag.tools.semantic_search import get_function_source_code
 
-    mock_ingestor._execute_query.return_value = [
+    mock_ingestor.fetch_all.return_value = [
         {
             "qualified_name": "project.module.func",
             "start_line": None,
@@ -287,7 +407,7 @@ def test_get_function_source_code_returns_none_on_invalid_location(
 def test_get_function_source_code_handles_exception(mock_ingestor: MagicMock) -> None:
     from codebase_rag.tools.semantic_search import get_function_source_code
 
-    mock_ingestor._execute_query.side_effect = Exception("Database error")
+    mock_ingestor.fetch_all.side_effect = Exception("Database error")
 
     with patch(
         "codebase_rag.services.graph_service.MemgraphIngestor",
@@ -331,7 +451,6 @@ def test_create_get_function_source_tool_returns_tool() -> None:
 @pytest.mark.skipif(
     not has_semantic_dependencies(), reason="semantic dependencies not installed"
 )
-@pytest.mark.asyncio
 async def test_semantic_search_tool_formats_results(
     mock_embed_code: MagicMock,
     mock_search_embeddings: MagicMock,
@@ -360,7 +479,6 @@ async def test_semantic_search_tool_formats_results(
 @pytest.mark.skipif(
     not has_semantic_dependencies(), reason="semantic dependencies not installed"
 )
-@pytest.mark.asyncio
 async def test_semantic_search_tool_handles_no_results(
     mock_embed_code: MagicMock,
 ) -> None:
@@ -381,13 +499,12 @@ async def test_semantic_search_tool_handles_no_results(
 @pytest.mark.skipif(
     not has_semantic_dependencies(), reason="semantic dependencies not installed"
 )
-@pytest.mark.asyncio
 async def test_get_function_source_tool_returns_source(
     mock_ingestor: MagicMock,
 ) -> None:
     from codebase_rag.tools.semantic_search import create_get_function_source_tool
 
-    mock_ingestor._execute_query.return_value = [
+    mock_ingestor.fetch_all.return_value = [
         {
             "qualified_name": "project.func",
             "start_line": 1,
@@ -423,13 +540,12 @@ async def test_get_function_source_tool_returns_source(
 @pytest.mark.skipif(
     not has_semantic_dependencies(), reason="semantic dependencies not installed"
 )
-@pytest.mark.asyncio
 async def test_get_function_source_tool_handles_not_found(
     mock_ingestor: MagicMock,
 ) -> None:
     from codebase_rag.tools.semantic_search import create_get_function_source_tool
 
-    mock_ingestor._execute_query.return_value = []
+    mock_ingestor.fetch_all.return_value = []
 
     tool = create_get_function_source_tool()
 
