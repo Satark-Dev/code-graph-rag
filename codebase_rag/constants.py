@@ -1934,6 +1934,19 @@ CPP_STDLIB_ENTITIES = frozenset(
 )
 
 # (H) Java common class names for heuristic detection
+JAVA_STDLIB_PREFIXES = (
+    "java.",
+    "javax.",
+    "jdk.",
+    "com.sun.",
+    "sun.",
+    "org.w3c.",
+    "org.xml.",
+    "org.ietf.",
+    "org.omg.",
+    "netscape.",
+)
+
 JAVA_STDLIB_CLASSES = frozenset(
     {
         "String",
