@@ -1933,7 +1933,7 @@ CPP_STDLIB_ENTITIES = frozenset(
     }
 )
 
-# (H) Java common class names for heuristic detection
+# (H) Java stdlib package prefixes for static stdlib detection
 JAVA_STDLIB_PREFIXES = (
     "java.",
     "javax.",
@@ -1947,6 +1947,7 @@ JAVA_STDLIB_PREFIXES = (
     "netscape.",
 )
 
+# (H) Java common class names for heuristic detection
 JAVA_STDLIB_CLASSES = frozenset(
     {
         "String",
