@@ -3,10 +3,11 @@ from __future__ import annotations
 import threading
 import types
 from collections import defaultdict
-from collections.abc import Generator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from typing import Any
 
 import mgclient  # ty: ignore[unresolved-import]
 from loguru import logger
@@ -73,6 +74,15 @@ class MemgraphConnection:
         self._password = password
         self._lock = threading.Lock()
         self._conn: mgclient.Connection | None = None
+
+    @property
+    def host(self) -> str: return self._host
+    @property
+    def port(self) -> int: return self._port
+    @property
+    def username(self) -> str | None: return self._username
+    @property
+    def password(self) -> str | None: return self._password
 
     def open(self) -> None:
         logger.info(ls.MG_CONNECTING.format(host=self._host, port=self._port))
@@ -193,10 +203,10 @@ class MemgraphConnection:
         ]
 
 
-class NodeBatchFlusher:
-    """Handles buffering and flushing of node batches to Memgraph."""
+class BaseBatchFlusher:
+    """Common logic for buffering and flushing batches with thread pool support."""
 
-    __slots__ = ("_connection", "_use_merge", "_executor", "_batch_size", "_buffer")
+    __slots__ = ("_connection", "_use_merge", "_batch_size", "_executor")
 
     def __init__(
         self,
@@ -209,7 +219,6 @@ class NodeBatchFlusher:
         self._use_merge = use_merge
         self._batch_size = batch_size
         self._executor: ThreadPoolExecutor | None = None
-        self._buffer: list[tuple[str, dict[str, PropertyValue]]] = []
 
     def start(self) -> None:
         self._executor = ThreadPoolExecutor(max_workers=settings.FLUSH_THREAD_POOL_SIZE)
@@ -218,6 +227,72 @@ class NodeBatchFlusher:
         if self._executor:
             self._executor.shutdown(wait=True)
             self._executor = None
+
+    def _call_with_own_conn(self, fn: Callable, *args) -> tuple[int, int]:
+        """Runs a function with its own dedicated connection for thread safety."""
+        worker_connection = MemgraphConnection(
+            host=self._connection.host,
+            port=self._connection.port,
+            username=self._connection.username,
+            password=self._connection.password,
+        )
+        worker_connection.open()
+        try:
+            return fn(*args, conn=worker_connection)
+        finally:
+            worker_connection.close()
+
+    def _run_parallel_flush(
+        self,
+        groups: dict[Any, list[Any]],
+        flush_fn: Callable,
+        log_label: str,
+        error_msg_fmt: str,
+        workers: int,
+    ) -> tuple[int, int, Exception | None]:
+        if not self._executor:
+            return 0, 0, None
+
+        logger.info(log_label.format(count=len(groups), workers=workers))
+
+        # Helper to wrap the flush function for thread pool submission
+        def _task(key: Any, items: list[Any]):
+            return self._call_with_own_conn(flush_fn, key, items)
+
+        futures = {self._executor.submit(_task, key, val): key for key, val in groups.items()}
+
+        flushed_total = 0
+        skipped_total = 0
+        first_error = None
+
+        for future in as_completed(futures):
+            key = futures[future]
+            try:
+                flushed, skipped = future.result()
+                flushed_total += flushed
+                skipped_total += skipped
+            except Exception as e:  # noqa: BLE001
+                logger.error(error_msg_fmt.format(key=key, error=e))
+                if first_error is None:
+                    first_error = e
+
+        return flushed_total, skipped_total, first_error
+
+
+class NodeBatchFlusher(BaseBatchFlusher):
+    """Handles buffering and flushing of node batches to Memgraph."""
+
+    __slots__ = ("_buffer",)
+
+    def __init__(
+        self,
+        connection: MemgraphConnection,
+        *,
+        use_merge: bool,
+        batch_size: int,
+    ) -> None:
+        super().__init__(connection, use_merge=use_merge, batch_size=batch_size)
+        self._buffer: list[tuple[str, dict[str, PropertyValue]]] = []
 
     def ensure_node_batch(
         self,
@@ -234,41 +309,22 @@ class NodeBatchFlusher:
             return
 
         buffer_size = len(self._buffer)
-        nodes_by_label: defaultdict[str, list[dict[str, PropertyValue]]] = defaultdict(
-            list
-        )
+        nodes_by_label: defaultdict[str, list[dict[str, PropertyValue]]] = defaultdict(list)
         for label, props in self._buffer:
             nodes_by_label[label].append(props)
 
         flushed_total = 0
         skipped_total = 0
-        first_error: Exception | None = None
+        first_error = None
 
         if self._executor and len(nodes_by_label) > 1:
-            logger.info(
-                ls.MG_PARALLEL_FLUSH_NODES.format(
-                    count=len(nodes_by_label),
-                    workers=settings.FLUSH_THREAD_POOL_SIZE,
-                )
+            flushed_total, skipped_total, first_error = self._run_parallel_flush(
+                groups=dict(nodes_by_label),
+                flush_fn=self._flush_node_label_group,
+                log_label=ls.MG_PARALLEL_FLUSH_NODES,
+                error_msg_fmt=ls.MG_LABEL_FLUSH_ERROR.replace("{label}", "{key}"), # Adapter
+                workers=settings.FLUSH_THREAD_POOL_SIZE,
             )
-            futures = {
-                self._executor.submit(
-                    self._flush_node_group_with_own_conn,
-                    label,
-                    props_list,
-                ): label
-                for label, props_list in nodes_by_label.items()
-            }
-            for future in as_completed(futures):
-                label = futures[future]
-                try:
-                    flushed, skipped = future.result()
-                    flushed_total += flushed
-                    skipped_total += skipped
-                except Exception as e:  # noqa: BLE001
-                    logger.error(ls.MG_LABEL_FLUSH_ERROR.format(label=label, error=e))
-                    if first_error is None:
-                        first_error = e
         else:
             for label, props_list in nodes_by_label.items():
                 try:
@@ -290,34 +346,6 @@ class NodeBatchFlusher:
         if first_error is not None:
             raise first_error
 
-    def _flush_node_group_with_own_conn(
-        self,
-        label: str,
-        props_list: list[dict[str, PropertyValue]],
-    ) -> tuple[int, int]:
-        return self._call_with_own_conn(
-            self._flush_node_label_group,
-            label,
-            props_list,
-        )
-
-    def _call_with_own_conn(
-        self,
-        fn,
-        *args,
-    ) -> tuple[int, int]:
-        # Separate connection per worker
-        worker_connection = MemgraphConnection(
-            host=self._connection._host,  # internal use
-            port=self._connection._port,
-            username=self._connection._username,
-            password=self._connection._password,
-        )
-        worker_connection.open()
-        try:
-            return fn(*args, conn=worker_connection)
-        finally:
-            worker_connection.close()
 
     def _flush_node_label_group(
         self,
@@ -359,10 +387,10 @@ class NodeBatchFlusher:
         return len(batch_rows), skipped
 
 
-class RelationshipBatchFlusher:
+class RelationshipBatchFlusher(BaseBatchFlusher):
     """Handles buffering and flushing of relationship batches to Memgraph."""
 
-    __slots__ = ("_connection", "_use_merge", "_executor", "_batch_size", "_rel_count", "_rel_groups")
+    __slots__ = ("_rel_count", "_rel_groups")
 
     def __init__(
         self,
@@ -371,22 +399,11 @@ class RelationshipBatchFlusher:
         use_merge: bool,
         batch_size: int,
     ) -> None:
-        self._connection = connection
-        self._use_merge = use_merge
-        self._batch_size = batch_size
-        self._executor: ThreadPoolExecutor | None = None
+        super().__init__(connection, use_merge=use_merge, batch_size=batch_size)
         self._rel_count = 0
         self._rel_groups: defaultdict[
             tuple[str, str, str, str, str], list[RelBatchRow]
         ] = defaultdict(list)
-
-    def start(self) -> None:
-        self._executor = ThreadPoolExecutor(max_workers=settings.FLUSH_THREAD_POOL_SIZE)
-
-    def stop(self) -> None:
-        if self._executor:
-            self._executor.shutdown(wait=True)
-            self._executor = None
 
     def ensure_relationship_batch(
         self,
@@ -412,40 +429,20 @@ class RelationshipBatchFlusher:
 
         total_attempted = 0
         total_successful = 0
-        first_error: Exception | None = None
+        first_error = None
 
         if self._executor and len(self._rel_groups) > 1:
-            logger.info(
-                ls.MG_PARALLEL_FLUSH_RELS.format(
-                    count=len(self._rel_groups),
-                    workers=settings.FLUSH_THREAD_POOL_SIZE,
-                )
+            total_attempted, total_successful, first_error = self._run_parallel_flush(
+                groups=dict(self._rel_groups),
+                flush_fn=self._flush_rel_pattern_group,
+                log_label=ls.MG_PARALLEL_FLUSH_RELS,
+                error_msg_fmt=ls.MG_REL_FLUSH_ERROR.replace("{pattern}", "{key}"), # Adapter
+                workers=settings.FLUSH_THREAD_POOL_SIZE,
             )
-            futures = {
-                self._executor.submit(
-                    self._flush_rel_group_with_own_conn,
-                    pattern,
-                    params_list,
-                ): pattern
-                for pattern, params_list in self._rel_groups.items()
-            }
-            for future in as_completed(futures):
-                pattern = futures[future]
-                try:
-                    attempted, successful = future.result()
-                    total_attempted += attempted
-                    total_successful += successful
-                except Exception as e:  # noqa: BLE001
-                    logger.error(ls.MG_REL_FLUSH_ERROR.format(pattern=pattern, error=e))
-                    if first_error is None:
-                        first_error = e
         else:
             for pattern, params_list in self._rel_groups.items():
                 try:
-                    attempted, successful = self._flush_rel_pattern_group(
-                        pattern,
-                        params_list,
-                    )
+                    attempted, successful = self._flush_rel_pattern_group(pattern, params_list)
                     total_attempted += attempted
                     total_successful += successful
                 except Exception as e:  # noqa: BLE001
@@ -466,33 +463,6 @@ class RelationshipBatchFlusher:
         if first_error is not None:
             raise first_error
 
-    def _flush_rel_group_with_own_conn(
-        self,
-        pattern: tuple[str, str, str, str, str],
-        params_list: list[RelBatchRow],
-    ) -> tuple[int, int]:
-        return self._call_with_own_conn(
-            self._flush_rel_pattern_group,
-            pattern,
-            params_list,
-        )
-
-    def _call_with_own_conn(
-        self,
-        fn,
-        *args,
-    ) -> tuple[int, int]:
-        worker_connection = MemgraphConnection(
-            host=self._connection._host,
-            port=self._connection._port,
-            username=self._connection._username,
-            password=self._connection._password,
-        )
-        worker_connection.open()
-        try:
-            return fn(*args, conn=worker_connection)
-        finally:
-            worker_connection.close()
 
     def _flush_rel_pattern_group(
         self,

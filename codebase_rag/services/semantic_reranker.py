@@ -58,32 +58,53 @@ async def _deepinfra_rerank(
     try:
         timeout = httpx.Timeout(float(settings.DEEPINFRA_TIMEOUT_SECONDS))
         max_retries = max(0, int(settings.DEEPINFRA_MAX_RETRIES))
-
         client = await _get_client(timeout=timeout)
-        last_error: Exception | None = None
-        for attempt in range(max_retries + 1):
-            try:
-                resp = await client.post(url, json=payload, headers=headers)
-                if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries:
-                    await asyncio.sleep(0.2 * (2**attempt))
-                    continue
-                resp.raise_for_status()
-                data = resp.json()
-                parsed = _DeepInfraRerankResponse.model_validate(data)
-                if len(parsed.scores) != len(candidates):
-                    return None
-                return [float(s) for s in parsed.scores]
-            except (httpx.TimeoutException, httpx.RequestError, httpx.HTTPStatusError) as e:
-                last_error = e
-                if attempt < max_retries:
-                    await asyncio.sleep(0.2 * (2**attempt))
-                    continue
-                break
-        if last_error is not None:
-            raise last_error
+
+        scores = await _execute_rerank_with_retries(
+            client=client,
+            url=url,
+            payload=payload,
+            headers=headers,
+            max_retries=max_retries,
+            candidate_count=len(candidates),
+        )
+        return scores
     except Exception as e:
         logger.warning(ls.SEMANTIC_RERANK_FAILED.format(error=e))
         return None
+
+
+async def _execute_rerank_with_retries(
+    *,
+    client: httpx.AsyncClient,
+    url: str,
+    payload: dict,
+    headers: dict,
+    max_retries: int,
+    candidate_count: int,
+) -> list[float] | None:
+    last_error: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            resp = await client.post(url, json=payload, headers=headers)
+            if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries:
+                await asyncio.sleep(0.2 * (2**attempt))
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            parsed = _DeepInfraRerankResponse.model_validate(data)
+            if len(parsed.scores) != candidate_count:
+                return None
+            return [float(s) for s in parsed.scores]
+        except (httpx.TimeoutException, httpx.RequestError, httpx.HTTPStatusError) as e:
+            last_error = e
+            if attempt < max_retries:
+                await asyncio.sleep(0.2 * (2**attempt))
+                continue
+            break
+    if last_error:
+        raise last_error
+    return None
 
 
 async def aclose_deepinfra_client() -> None:

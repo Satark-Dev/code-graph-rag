@@ -712,31 +712,18 @@ class GraphUpdater:
             task = progress.add_task("", total=len(eligible_files))
 
             for filepath in eligible_files:
-                file_key = str(filepath.relative_to(self.repo_path))
+                file_key, current_hash, is_changed = self._handle_file_change(
+                    filepath, old_hashes, force
+                )
+                new_hashes[file_key] = current_hash
                 current_file_keys.add(file_key)
 
-                current_hash = _hash_file(filepath)
-                new_hashes[file_key] = current_hash
-
-                if (
-                    not force
-                    and file_key in old_hashes
-                    and old_hashes[file_key] == current_hash
-                ):
-                    logger.debug(ls.FILE_HASH_UNCHANGED, path=file_key)
+                if not is_changed:
                     skipped_count += 1
                     progress.advance(task)
                     continue
 
-                if file_key in old_hashes:
-                    logger.debug(ls.FILE_HASH_CHANGED, path=file_key)
-                    self.remove_file_from_state(filepath)
-                else:
-                    logger.debug(ls.FILE_HASH_NEW, path=file_key)
-
                 changed_count += 1
-                self._process_single_file(filepath)
-
                 processed_since_flush += 1
                 if processed_since_flush >= settings.FILE_FLUSH_INTERVAL:
                     logger.info(ls.PERIODIC_FLUSH.format(count=processed_since_flush))
@@ -749,19 +736,7 @@ class GraphUpdater:
                     description=ls.PROGRESS_FILES_PROCESSED.format(count=changed_count),
                 )
 
-        deleted_keys = set(old_hashes.keys()) - current_file_keys
-        if deleted_keys:
-            logger.info(ls.INCREMENTAL_DELETED, count=len(deleted_keys))
-            for deleted_key in deleted_keys:
-                deleted_path = self.repo_path / deleted_key
-                self.remove_file_from_state(deleted_path)
-                if isinstance(self.ingestor, QueryProtocol):
-                    self.ingestor.execute_write(
-                        cs.CYPHER_DELETE_MODULE, {cs.KEY_PATH: deleted_key}
-                    )
-                    self.ingestor.execute_write(
-                        cs.CYPHER_DELETE_FILE, {cs.KEY_PATH: deleted_key}
-                    )
+        self._handle_deleted_files(old_hashes, current_file_keys)
 
         if skipped_count > 0:
             logger.info(ls.INCREMENTAL_SKIPPED, count=skipped_count)
@@ -769,6 +744,39 @@ class GraphUpdater:
             logger.info(ls.INCREMENTAL_CHANGED, count=changed_count)
 
         _save_hash_cache(cache_path, new_hashes)
+
+    def _handle_file_change(
+        self, filepath: Path, old_hashes: FileHashCache, force: bool
+    ) -> tuple[str, str, bool]:
+        file_key = str(filepath.relative_to(self.repo_path))
+        current_hash = _hash_file(filepath)
+
+        if not force and old_hashes.get(file_key) == current_hash:
+            logger.debug(ls.FILE_HASH_UNCHANGED, path=file_key)
+            return file_key, current_hash, False
+
+        if file_key in old_hashes:
+            logger.debug(ls.FILE_HASH_CHANGED, path=file_key)
+            self.remove_file_from_state(filepath)
+        else:
+            logger.debug(ls.FILE_HASH_NEW, path=file_key)
+
+        self._process_single_file(filepath)
+        return file_key, current_hash, True
+
+    def _handle_deleted_files(self, old_hashes: FileHashCache, current_keys: set[str]) -> None:
+        deleted_keys = set(old_hashes.keys()) - current_keys
+        if not deleted_keys:
+            return
+
+        logger.info(ls.INCREMENTAL_DELETED, count=len(deleted_keys))
+        for deleted_key in deleted_keys:
+            deleted_path = self.repo_path / deleted_key
+            self.remove_file_from_state(deleted_path)
+            if not isinstance(self.ingestor, QueryProtocol):
+                continue
+            self.ingestor.execute_write(cs.CYPHER_DELETE_MODULE, {cs.KEY_PATH: deleted_key})
+            self.ingestor.execute_write(cs.CYPHER_DELETE_FILE, {cs.KEY_PATH: deleted_key})
 
     def _process_single_file(self, filepath: Path) -> None:
         lang_config = get_language_spec(filepath.suffix)
@@ -805,48 +813,52 @@ class GraphUpdater:
 
         logger.info(ls.PRUNE_START)
         total_pruned = 0
-
-        project_prefix = self.project_name + "."
         repo_abs = self.repo_path.resolve().as_posix()
-        prune_specs: list[tuple[str, str, str]] = [
+        project_prefix = self.project_name + "."
+
+        prune_specs = [
             (cs.CYPHER_ALL_FILE_PATHS, cs.CYPHER_DELETE_FILE, "File"),
-            (
-                cs.CYPHER_ALL_MODULE_PATHS_INTERNAL,
-                cs.CYPHER_DELETE_MODULE,
-                "Module",
-            ),
+            (cs.CYPHER_ALL_MODULE_PATHS_INTERNAL, cs.CYPHER_DELETE_MODULE, "Module"),
             (cs.CYPHER_ALL_FOLDER_PATHS, cs.CYPHER_DELETE_FOLDER, "Folder"),
         ]
 
         for query_all, delete_query, label in prune_specs:
-            rows = self.ingestor.fetch_all(query_all)
-            orphans = []
-            for r in rows:
-                path = r.get("path")
-                if not isinstance(path, str) or not path:
-                    continue
-                abs_path = r.get("absolute_path")
-                qn = r.get("qualified_name", "")
-                if isinstance(abs_path, str) and not abs_path.startswith(repo_abs):
-                    continue
-                if isinstance(qn, str) and qn and not qn.startswith(project_prefix):
-                    continue
-                if not (self.repo_path / path).exists():
-                    orphans.append(path)
-
+            orphans = self._find_orphans_for_spec(
+                query_all, repo_abs, project_prefix
+            )
             if orphans:
                 logger.info(ls.PRUNE_FOUND, count=len(orphans), label=label)
-                for orphan_path in orphans:
-                    logger.debug(ls.PRUNE_DELETING, label=label, path=orphan_path)
-                    self.ingestor.execute_write(
-                        delete_query, {cs.KEY_PATH: orphan_path}
-                    )
+                self._remove_orphans(delete_query, orphans, label)
                 total_pruned += len(orphans)
 
         if total_pruned:
             logger.info(ls.PRUNE_COMPLETE, count=total_pruned)
         else:
             logger.info(ls.PRUNE_SKIP)
+
+    def _find_orphans_for_spec(
+        self, query_all: str, repo_abs: str, project_prefix: str
+    ) -> list[str]:
+        rows = self.ingestor.fetch_all(query_all)
+        orphans = []
+        for r in rows:
+            path = r.get("path")
+            if not isinstance(path, str) or not path:
+                continue
+            abs_path = r.get("absolute_path")
+            qn = r.get("qualified_name", "")
+            if isinstance(abs_path, str) and not abs_path.startswith(repo_abs):
+                continue
+            if isinstance(qn, str) and qn and not qn.startswith(project_prefix):
+                continue
+            if not (self.repo_path / path).exists():
+                orphans.append(path)
+        return orphans
+
+    def _remove_orphans(self, delete_query: str, orphans: list[str], label: str) -> None:
+        for orphan_path in orphans:
+            logger.debug(ls.PRUNE_DELETING, label=label, path=orphan_path)
+            self.ingestor.execute_write(delete_query, {cs.KEY_PATH: orphan_path})
 
     def _generate_semantic_embeddings(self) -> None:  # Backwards compatibility shim
         self.embedding_generator.generate()

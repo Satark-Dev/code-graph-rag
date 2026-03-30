@@ -185,48 +185,46 @@ def _usage_from_result(result: Any) -> tuple[int | None, int | None, int | None]
     Best-effort extraction of token usage from pydantic_ai results across providers.
     Returns (input, output, total) or (None, None, None) if unavailable.
     """
-    # Common patterns: result.usage (dict or object), result.model_response.usage (dict)
-    candidates: list[Any] = []
-    for attr in ("usage", "model_response", "response", "raw_response"):
-        if hasattr(result, attr):
-            candidates.append(getattr(result, attr))
-    candidates.append(result)
+    def _extract_usage(obj: Any) -> dict[str, Any] | None:
+        if isinstance(obj, dict):
+            return obj.get("usage") if isinstance(obj.get("usage"), dict) else obj
 
-    def _as_dict(v: Any) -> dict[str, Any] | None:
-        if isinstance(v, dict):
-            return v
-        if hasattr(v, "usage") and isinstance(getattr(v, "usage"), dict):
-            return getattr(v, "usage")
-        if hasattr(v, "model_dump"):
-            try:
-                dumped = v.model_dump()
-                if isinstance(dumped, dict):
-                    return dumped
-            except Exception:
-                return None
+        # Try finding usage attribute
+        for attr in ("usage", "model_response", "response"):
+            val = getattr(obj, attr, None)
+            if val is not None:
+                if isinstance(val, dict):
+                    return val
+                if hasattr(val, "usage"):
+                    return getattr(val, "usage")
+                if hasattr(val, "model_dump"):
+                    try:
+                        d = val.model_dump()
+                        if isinstance(d, dict):
+                            return d.get("usage") or d
+                    except Exception:
+                        pass
         return None
 
-    for c in candidates:
-        d = _as_dict(c)
-        if not d:
-            continue
+    usage = _extract_usage(result)
+    if not isinstance(usage, dict):
+        return None, None, None
 
-        usage = d.get("usage") if isinstance(d.get("usage"), dict) else d
-        if not isinstance(usage, dict):
-            continue
+    prompt = usage.get("prompt_tokens") or usage.get("input_tokens")
+    completion = usage.get("completion_tokens") or usage.get("output_tokens")
+    total = usage.get("total_tokens")
 
-        prompt = usage.get("prompt_tokens") or usage.get("input_tokens")
-        completion = usage.get("completion_tokens") or usage.get("output_tokens")
-        total = usage.get("total_tokens")
-        if isinstance(prompt, int) or isinstance(completion, int) or isinstance(total, int):
-            in_t = int(prompt) if isinstance(prompt, int) else None
-            out_t = int(completion) if isinstance(completion, int) else None
-            tot_t = int(total) if isinstance(total, int) else None
-            if tot_t is None and in_t is not None and out_t is not None:
-                tot_t = in_t + out_t
-            return in_t, out_t, tot_t
+    if not any(isinstance(x, int) for x in (prompt, completion, total)):
+        return None, None, None
 
-    return None, None, None
+    in_t = int(prompt) if isinstance(prompt, int) else None
+    out_t = int(completion) if isinstance(completion, int) else None
+    tot_t = int(total) if isinstance(total, int) else None
+
+    if tot_t is None and in_t is not None and out_t is not None:
+        tot_t = in_t + out_t
+        
+    return in_t, out_t, tot_t
 
 
 def _build_usage_dict(
@@ -274,6 +272,49 @@ def _get_lang_from_path(file_path: Any) -> str:
     return mapping.get(ext, ext)
 
 
+def _render_evidence_item(idx: int, item: dict[str, Any], lines: list[str]) -> None:
+    question = item.get("question") or f"Finding {idx}"
+    answer = item.get("answer") or ""
+    code_ref = item.get("code_reference")
+    ev = item.get("evidence") if isinstance(item.get("evidence"), dict) else None
+
+    lines.append(f"## {idx}. {question}")
+    lines.append("")
+    if code_ref:
+        lines.append(f"**Code reference**: `{code_ref}`")
+        lines.append("")
+    if ev:
+        ev_file = ev.get("file")
+        ev_lines = ev.get("line_range")
+        ev_type = ev.get("type")
+        if ev_file or ev_lines or ev_type:
+            parts: list[str] = []
+            if ev_file:
+                parts.append(f"file `{ev_file}`")
+            if ev_lines:
+                parts.append(f"lines {ev_lines}")
+            if ev_type:
+                parts.append(f"type {ev_type}")
+            lines.append("**Evidence**: " + ", ".join(parts))
+            lines.append("")
+        snippet = ev.get("snippet")
+        if snippet:
+            lang = _get_lang_from_path(ev_file)
+            lines.append(f"```{lang}")
+            lines.append(str(snippet))
+            lines.append("```")
+            lines.append("")
+        interp = ev.get("interpretation")
+        if interp:
+            lines.append(f"**Interpretation**: {interp}")
+            lines.append("")
+
+    if answer:
+        lines.append("**Answer:**")
+        lines.append(answer)
+        lines.append("")
+
+
 def evidence_to_markdown(evidence_json: dict[str, Any]) -> str:
     """
     Render the evidence section as a human-readable Markdown document.
@@ -285,48 +326,8 @@ def evidence_to_markdown(evidence_json: dict[str, Any]) -> str:
     lines: list[str] = ["# Evidence Pack", ""]
 
     for idx, item in enumerate(items, start=1):
-        if not isinstance(item, dict):
-            continue
-        question = item.get("question") or f"Finding {idx}"
-        answer = item.get("answer") or ""
-        code_ref = item.get("code_reference")
-        ev = item.get("evidence") if isinstance(item.get("evidence"), dict) else None
-
-        lines.append(f"## {idx}. {question}")
-        lines.append("")
-        if code_ref:
-            lines.append(f"**Code reference**: `{code_ref}`")
-            lines.append("")
-        if ev:
-            ev_file = ev.get("file")
-            ev_lines = ev.get("line_range")
-            ev_type = ev.get("type")
-            if ev_file or ev_lines or ev_type:
-                parts: list[str] = []
-                if ev_file:
-                    parts.append(f"file `{ev_file}`")
-                if ev_lines:
-                    parts.append(f"lines {ev_lines}")
-                if ev_type:
-                    parts.append(f"type {ev_type}")
-                lines.append("**Evidence**: " + ", ".join(parts))
-                lines.append("")
-            snippet = ev.get("snippet")
-            if snippet:
-                lang = _get_lang_from_path(ev_file)
-                lines.append(f"```{lang}")
-                lines.append(str(snippet))
-                lines.append("```")
-                lines.append("")
-            interp = ev.get("interpretation")
-            if interp:
-                lines.append(f"**Interpretation**: {interp}")
-                lines.append("")
-
-        if answer:
-            lines.append("**Answer:**")
-            lines.append(answer)
-            lines.append("")
+        if isinstance(item, dict):
+            _render_evidence_item(idx, item, lines)
 
     return "\n".join(lines).strip()
 
@@ -492,50 +493,24 @@ class ChatOrchestratorService:
         key_material = f"{query_str}|{state_hash}"
         return hashlib.md5(key_material.encode("utf-8")).hexdigest()
 
+
     @classmethod
-    async def process_query(
-        cls, request_query: dict, ingestor: Any, target_repo_path: str
-    ) -> dict[str, Any]:
-        """
-        Executes the logic to extract an evidence pack, score it, and propose remediation.
-
-        Args:
-            request_query: The incoming query data payload (e.g. findings).
-            ingestor: The Memgraph database ingestor instance.
-            target_repo_path: Absolute path to the repository being analyzed.
-
-        Returns:
-            Dictionary containing 'evidence', 'scoring', 'remediation', or an 'error'.
-        """
-        cache_key = cls._get_cache_key(request_query, target_repo_path)
-
-        repo_state_hash = _compute_repo_state_hash(target_repo_path)
-
-        run_id = new_run_id()
-
-        evidence_agent, _ = initialize_services_and_agent(
-            target_repo_path, ingestor, system_prompt=API_EVIDENCE_PROMPT
-        )
-
+    async def _run_evidence_stage(
+        cls,
+        *,
+        run_id: str,
+        query_payload: str,
+        evidence_agent: Any,
+        cache_key: str,
+        target_repo_path: str,
+        repo_state_hash: str,
+    ) -> tuple[dict[str, Any], dict[str, int], int]:
         message_history = []
         deferred_results = None
-
-        if isinstance(request_query, dict) and isinstance(
-            request_query.get("findings"), list
-        ):
-            findings_payload = request_query
-        else:
-            findings_payload = {"findings": [request_query]}
-
-        query_payload = json.dumps(findings_payload, ensure_ascii=False)
+        evidence_usage_from_provider: tuple[int | None, int | None, int | None] = (None, None, None)
         evidence_in_tokens = count_tokens(API_EVIDENCE_PROMPT) + count_tokens(query_payload)
-        evidence_usage_from_provider: tuple[int | None, int | None, int | None] = (
-            None,
-            None,
-            None,
-        )
 
-        async def _run_evidence_once() -> dict[str, Any]:
+        async def _run_once() -> dict[str, Any]:
             nonlocal deferred_results, message_history, evidence_usage_from_provider
             while True:
                 result = await evidence_agent.run(
@@ -568,13 +543,13 @@ class ChatOrchestratorService:
         evidence_timeout = float(settings.CHAT_EVIDENCE_TIMEOUT_SECONDS)
         evidence_attempts = max(1, int(settings.CHAT_SCHEMA_RETRY_ATTEMPTS))
 
-        evidence_json: dict[str, Any] | None = None
+        evidence_json = None
         evidence_ms = 0
         for attempt in range(evidence_attempts):
             t_stage = time.perf_counter()
             try:
                 evidence_json = await _run_with_timeout(
-                    _run_evidence_once(),
+                    _run_once(),
                     timeout_s=evidence_timeout,
                     stage="evidence",
                     run_id=run_id,
@@ -595,41 +570,29 @@ class ChatOrchestratorService:
             evidence_in_tokens,
             evidence_out_tokens,
         )
-        # Flattened evidence: items[] instead of nested findings/justification/Q&A.
-        evidence_input = {"items": evidence_items}
-        evidence_output = {"items": evidence_items}
+
         _persist_stage(
             run_id=run_id,
             cache_key=cache_key,
             repo_path=target_repo_path,
             repo_state_hash=repo_state_hash,
             stage="evidence",
-            tool_input=evidence_input,
-            tool_output=evidence_output,
+            tool_input={"items": evidence_items},
+            tool_output={"items": evidence_items},
         )
+        return evidence_json, evidence_usage, evidence_ms
 
-        shared_input = {"findings": evidence_items}
-        shared_payload = json.dumps(shared_input, ensure_ascii=False)
-        scoring_in_tokens = count_tokens(API_SCORING_PROMPT) + count_tokens(shared_payload)
-        remediation_in_tokens = count_tokens(API_REMEDIATION_PROMPT) + count_tokens(shared_payload)
-        scoring_usage_from_provider: tuple[int | None, int | None, int | None] = (
-            None,
-            None,
-            None,
-        )
-        remediation_usage_from_provider: tuple[int | None, int | None, int | None] = (
-            None,
-            None,
-            None,
-        )
-
+    @classmethod
+    async def _run_scoring_stage(
+        cls,
+        *,
+        run_id: str,
+        shared_payload: str,
+        timeout: float,
+    ) -> tuple[dict[str, Any], tuple[int | None, int | None, int | None]]:
         scoring_agent = create_rag_orchestrator(tools=[], system_prompt=API_SCORING_PROMPT)
-        remediation_agent = create_rag_orchestrator(
-            tools=[], system_prompt=API_REMEDIATION_PROMPT
-        )
 
-        async def _run_scoring_once() -> dict[str, Any]:
-            nonlocal scoring_usage_from_provider
+        async def _run_once() -> dict[str, Any]:
             result = await scoring_agent.run(shared_payload)
             if not isinstance(result.output, str):
                 raise ChatStageError(
@@ -637,15 +600,33 @@ class ChatOrchestratorService:
                     message=f"Unexpected scoring response format: {type(result.output)}",
                     run_id=run_id,
                 )
-            scoring_usage_from_provider = _usage_from_result(result)
-            return _parse_and_validate_stage(
+            return result, _parse_and_validate_stage(
                 stage=PipelineStage.SCORING,
                 raw_text=result.output,
                 run_id=run_id,
             )
 
-        async def _run_remediation_once() -> dict[str, Any]:
-            nonlocal remediation_usage_from_provider
+        result, scoring_json = await _run_with_timeout(
+            _run_once(),
+            timeout_s=timeout,
+            stage="scoring",
+            run_id=run_id,
+        )
+        return scoring_json, _usage_from_result(result)
+
+    @classmethod
+    async def _run_remediation_stage(
+        cls,
+        *,
+        run_id: str,
+        shared_payload: str,
+        timeout: float,
+    ) -> tuple[dict[str, Any], tuple[int | None, int | None, int | None]]:
+        remediation_agent = create_rag_orchestrator(
+            tools=[], system_prompt=API_REMEDIATION_PROMPT
+        )
+
+        async def _run_once() -> dict[str, Any]:
             result = await remediation_agent.run(shared_payload)
             if not isinstance(result.output, str):
                 raise ChatStageError(
@@ -653,68 +634,149 @@ class ChatOrchestratorService:
                     message=f"Unexpected remediation response format: {type(result.output)}",
                     run_id=run_id,
                 )
-            remediation_usage_from_provider = _usage_from_result(result)
-            return _parse_and_validate_stage(
+            return result, _parse_and_validate_stage(
                 stage=PipelineStage.REMEDIATION,
                 raw_text=result.output,
                 run_id=run_id,
             )
 
+        result, remediation_json = await _run_with_timeout(
+            _run_once(),
+            timeout_s=timeout,
+            stage="remediation",
+            run_id=run_id,
+        )
+        return remediation_json, _usage_from_result(result)
+
+    @classmethod
+    def _build_final_response(
+        cls,
+        *,
+        run_id: str,
+        evidence_json: dict[str, Any],
+        evidence_ms: int,
+        evidence_usage: dict[str, int],
+        scoring_json: dict[str, Any],
+        scoring_ms: int,
+        scoring_usage: dict[str, int],
+        remediation_json: dict[str, Any],
+        remediation_ms: int,
+        remediation_usage: dict[str, int],
+    ) -> dict[str, Any]:
+        models = {
+            "orchestrator": {
+                "provider": settings.active_orchestrator_config.provider,
+                "model": settings.active_orchestrator_config.model_id,
+            },
+            "cypher": {
+                "provider": settings.active_cypher_config.provider,
+                "model": settings.active_cypher_config.model_id,
+            },
+        }
+
+        return {
+            "run_id": run_id,
+            "evidence": {
+                **evidence_json,
+                "timings_ms": evidence_ms,
+                "token_usage": evidence_usage,
+                "markdown": evidence_to_markdown(evidence_json),
+            },
+            "scoring": {
+                **scoring_json,
+                "timings_ms": scoring_ms,
+                "token_usage": scoring_usage,
+                "markdown": scoring_to_markdown(scoring_json),
+            },
+            "remediation": {
+                **remediation_json,
+                "timings_ms": remediation_ms,
+                "token_usage": remediation_usage,
+                "markdown": remediation_to_markdown(remediation_json),
+            },
+            "models": models,
+        }
+
+    @classmethod
+    async def process_query(
+        cls, request_query: dict, ingestor: Any, target_repo_path: str
+    ) -> dict[str, Any]:
+        """
+        Executes the logic to extract an evidence pack, score it, and propose remediation.
+        """
+        cache_key = cls._get_cache_key(request_query, target_repo_path)
+        repo_state_hash = _compute_repo_state_hash(target_repo_path)
+        run_id = new_run_id()
+
+        evidence_agent, _ = initialize_services_and_agent(
+            target_repo_path, ingestor, system_prompt=API_EVIDENCE_PROMPT
+        )
+
+        if isinstance(request_query, dict) and isinstance(request_query.get("findings"), list):
+            findings_payload = request_query
+        else:
+            findings_payload = {"findings": [request_query]}
+
+        query_payload = json.dumps(findings_payload, ensure_ascii=False)
+
+        # 1. Evidence Stage
+        evidence_json, evidence_usage, evidence_ms = await cls._run_evidence_stage(
+            run_id=run_id,
+            query_payload=query_payload,
+            evidence_agent=evidence_agent,
+            cache_key=cache_key,
+            target_repo_path=target_repo_path,
+            repo_state_hash=repo_state_hash,
+        )
+
+        evidence_items = evidence_json.get("items", [])
+        shared_input = {"findings": evidence_items}
+        shared_payload = json.dumps(shared_input, ensure_ascii=False)
+
+        # 2. Scoring & Remediation Stages (Parallel)
         scoring_timeout = float(settings.CHAT_SCORING_TIMEOUT_SECONDS)
         remediation_timeout = float(settings.CHAT_REMEDIATION_TIMEOUT_SECONDS)
         stage_attempts = max(1, int(settings.CHAT_SCHEMA_RETRY_ATTEMPTS))
 
-        async def _timed(stage: str, coro):
-            t_stage = time.perf_counter()
-            result = await coro
-            return result, int((time.perf_counter() - t_stage) * 1000)
-
-        scoring_json: dict[str, Any] | None = None
-        remediation_json: dict[str, Any] | None = None
+        scoring_json = None
+        remediation_json = None
         scoring_ms = 0
         remediation_ms = 0
+        scoring_usage_provider = (None, None, None)
+        remediation_usage_provider = (None, None, None)
+
+        async def _timed(stage: str, coro):
+            t_start = time.perf_counter()
+            res = await coro
+            return res, int((time.perf_counter() - t_start) * 1000)
+
         for attempt in range(stage_attempts):
             try:
-                (scoring_json, scoring_ms), (remediation_json, remediation_ms) = await asyncio.gather(
-                    _timed(
-                        "scoring",
-                        _run_with_timeout(
-                            _run_scoring_once(),
-                            timeout_s=scoring_timeout,
-                            stage="scoring",
-                            run_id=run_id,
-                        ),
-                    ),
-                    _timed(
-                        "remediation",
-                        _run_with_timeout(
-                            _run_remediation_once(),
-                            timeout_s=remediation_timeout,
-                            stage="remediation",
-                            run_id=run_id,
-                        ),
-                    ),
+                (
+                    (scoring_json, scoring_usage_provider),
+                    scoring_ms,
+                ), (
+                    (remediation_json, remediation_usage_provider),
+                    remediation_ms,
+                ) = await asyncio.gather(
+                    _timed("scoring", cls._run_scoring_stage(run_id=run_id, shared_payload=shared_payload, timeout=scoring_timeout)),
+                    _timed("remediation", cls._run_remediation_stage(run_id=run_id, shared_payload=shared_payload, timeout=remediation_timeout)),
                 )
                 break
             except ChatStageError:
                 if attempt >= stage_attempts - 1:
                     raise
 
-        assert scoring_json is not None
-        assert remediation_json is not None
-
-        scoring_out_tokens = count_tokens(json.dumps(scoring_json, ensure_ascii=False))
-        remediation_out_tokens = count_tokens(json.dumps(remediation_json, ensure_ascii=False))
-
+        # 3. Finalize
         scoring_usage = _build_usage_dict(
-            scoring_usage_from_provider,
-            scoring_in_tokens,
-            scoring_out_tokens,
+            scoring_usage_provider,
+            count_tokens(API_SCORING_PROMPT) + count_tokens(shared_payload),
+            count_tokens(json.dumps(scoring_json, ensure_ascii=False)),
         )
         remediation_usage = _build_usage_dict(
-            remediation_usage_from_provider,
-            remediation_in_tokens,
-            remediation_out_tokens,
+            remediation_usage_provider,
+            count_tokens(API_REMEDIATION_PROMPT) + count_tokens(shared_payload),
+            count_tokens(json.dumps(remediation_json, ensure_ascii=False)),
         )
 
         _persist_stage(
@@ -736,36 +798,15 @@ class ChatOrchestratorService:
             tool_output=remediation_json,
         )
 
-        models = {
-            "orchestrator": {
-                "provider": settings.active_orchestrator_config.provider,
-                "model": settings.active_orchestrator_config.model_id,
-            },
-            "cypher": {
-                "provider": settings.active_cypher_config.provider,
-                "model": settings.active_cypher_config.model_id,
-            },
-        }
-
-        return {
-            "run_id": run_id,
-            "evidence": {
-                **evidence_output,
-                "timings_ms": evidence_ms,
-                "token_usage": evidence_usage,
-                "markdown": evidence_to_markdown(evidence_output),
-            },
-            "scoring": {
-                **scoring_json,
-                "timings_ms": scoring_ms,
-                "token_usage": scoring_usage,
-                "markdown": scoring_to_markdown(scoring_json),
-            },
-            "remediation": {
-                **remediation_json,
-                "timings_ms": remediation_ms,
-                "token_usage": remediation_usage,
-                "markdown": remediation_to_markdown(remediation_json),
-            },
-            "models": models,
-        }
+        return cls._build_final_response(
+            run_id=run_id,
+            evidence_json={"items": evidence_items},
+            evidence_ms=evidence_ms,
+            evidence_usage=evidence_usage,
+            scoring_json=scoring_json,
+            scoring_ms=scoring_ms,
+            scoring_usage=scoring_usage,
+            remediation_json=remediation_json,
+            remediation_ms=remediation_ms,
+            remediation_usage=remediation_usage,
+        )

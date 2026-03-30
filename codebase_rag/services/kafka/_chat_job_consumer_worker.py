@@ -49,32 +49,19 @@ def _persist_scores_safe(org_id: str, scored_findings: list[Any], invocation: st
         )
 
 
-def _build_markdown_preview(response_data: dict[str, Any]) -> str:
-    evidence_md = (
-        response_data.get("evidence", {}).get("markdown") or ""
-        if isinstance(response_data.get("evidence"), dict)
-        else ""
-    )
-    scoring_md = (
-        response_data.get("scoring", {}).get("markdown") or ""
-        if isinstance(response_data.get("scoring"), dict)
-        else ""
-    )
-    remediation_md = (
-        response_data.get("remediation", {}).get("markdown") or ""
-        if isinstance(response_data.get("remediation"), dict)
-        else ""
-    )
+def _get_markdown_from_section(response_data: dict[str, Any], section: str) -> str:
+    data = response_data.get(section)
+    return data.get("markdown") or "" if isinstance(data, dict) else ""
 
-    if any([evidence_md.strip(), scoring_md.strip(), remediation_md.strip()]):
-        combined_md_parts = []
-        if evidence_md.strip():
-            combined_md_parts.append(evidence_md.strip())
-        if scoring_md.strip():
-            combined_md_parts.append(scoring_md.strip())
-        if remediation_md.strip():
-            combined_md_parts.append(remediation_md.strip())
-        return "\n\n".join(combined_md_parts)
+
+def _build_markdown_preview(response_data: dict[str, Any]) -> str:
+    sections = ["evidence", "scoring", "remediation"]
+    markdown_parts = [
+        md for section in sections if (md := _get_markdown_from_section(response_data, section).strip())
+    ]
+
+    if markdown_parts:
+        return "\n\n".join(markdown_parts)
 
     try:
         return json.dumps(
