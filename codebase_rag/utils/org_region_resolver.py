@@ -10,9 +10,28 @@ import logging
 import os
 import threading
 from collections import OrderedDict
+from dataclasses import dataclass
 from urllib.parse import quote_plus
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PostgresConfig:
+    host: str
+    port: int
+    user: str
+    password: str
+    name: str
+    sslmode_required: bool = False
+
+
+def build_postgres_dsn(config: PostgresConfig) -> str:
+    """Build a PostgreSQL DSN from a simple config object."""
+    user_q = quote_plus(config.user)
+    password_q = quote_plus(config.password)
+    ssl_suffix = "?sslmode=require" if config.sslmode_required else ""
+    return f"postgresql://{user_q}:{password_q}@{config.host}:{config.port}/{config.name}{ssl_suffix}"
 
 
 class OrgRegionResolver:
@@ -27,19 +46,15 @@ class OrgRegionResolver:
         from ..config import settings
 
         if settings.CORE_DB_HOST:
-            host = settings.CORE_DB_HOST
-            port = settings.CORE_DB_PORT or 5432
-            user = settings.CORE_DB_USER or "postgres"
-            password = settings.CORE_DB_PASSWORD or ""
-            name = settings.CORE_DB_NAME or "postgres"
-            ssl = (
-                "?sslmode=require"
-                if str(settings.CORE_DB_SSL or "").lower() == "true"
-                else ""
+            cfg = PostgresConfig(
+                host=settings.CORE_DB_HOST,
+                port=settings.CORE_DB_PORT or 5432,
+                user=settings.CORE_DB_USER or "postgres",
+                password=settings.CORE_DB_PASSWORD or "",
+                name=settings.CORE_DB_NAME or "postgres",
+                sslmode_required=str(settings.CORE_DB_SSL or "").lower() == "true",
             )
-            user_q = quote_plus(user)
-            password_q = quote_plus(password)
-            return f"postgresql://{user_q}:{password_q}@{host}:{port}/{name}{ssl}"
+            return build_postgres_dsn(cfg)
 
         raise RuntimeError(
             "Core DB config missing. Set CORE_DB_HOST, CORE_DB_PORT, CORE_DB_USER, "
@@ -81,10 +96,15 @@ class OrgRegionResolver:
         password = self._org_field(region, "PASSWORD") or ""
         name = self._org_field(region, "NAME") or f"satark_org_db_{region}"
         ssl_val = self._org_field(region, "SSL") or "false"
-        ssl = "?sslmode=require" if str(ssl_val).lower() == "true" else ""
-        user_q = quote_plus(user)
-        password_q = quote_plus(password)
-        return f"postgresql://{user_q}:{password_q}@{host}:{port}/{name}{ssl}"
+        cfg = PostgresConfig(
+            host=host,
+            port=port,
+            user=user,
+            password=password,
+            name=name,
+            sslmode_required=str(ssl_val).lower() == "true",
+        )
+        return build_postgres_dsn(cfg)
 
     def get_region_for_org_id(self, org_id: str) -> int:
         if not org_id or not str(org_id).strip():

@@ -1,154 +1,33 @@
 from __future__ import annotations
 
 import asyncio
-import difflib
 import json
-import os
-import shlex
-import shutil
 import sys
-import threading
-import uuid
-from collections import deque
-from collections.abc import Coroutine
-from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from loguru import logger
-from prompt_toolkit import prompt
-from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.shortcuts import print_formatted_text
-from pydantic_ai import DeferredToolRequests, DeferredToolResults, ToolDenied
-from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.prompt import Confirm, Prompt
 from rich.table import Table
-from rich.text import Text
 
 from . import constants as cs
-from . import exceptions as ex
-from . import logs as ls
-from .config import ModelConfig, load_cgrignore_patterns, settings
-from .models import AppContext
-from .prompts import OPTIMIZATION_PROMPT, OPTIMIZATION_PROMPT_WITH_REFERENCE
-from .providers.base import get_provider_from_config
-from .services import QueryProtocol
-from .services.graph_service import MemgraphIngestor
-from .services.llm import CypherGenerator, create_rag_orchestrator
-from .tools.code_retrieval import CodeRetriever, create_code_retrieval_tool
-from .tools.codebase_query import create_query_tool
-from .tools.directory_lister import DirectoryLister, create_directory_lister_tool
-from .tools.document_analyzer import DocumentAnalyzer, create_document_analyzer_tool
-from .tools.file_editor import FileEditor, create_file_editor_tool
-from .tools.file_reader import FileReader, create_file_reader_tool
-from .tools.file_writer import FileWriter, create_file_writer_tool
-from .tools.semantic_search import (
-    create_get_function_source_tool,
-    create_semantic_search_tool,
+from .bootstrap import (
+    connect_memgraph,
+    initialize_services_and_agent,
+    prewarm_semantic_model,
+    setup_common_initialization,
+    update_model_settings,
 )
-from .tools.shell_command import ShellCommander, create_shell_command_tool
-from .types_defs import (
-    CHAT_LOOP_UI,
-    OPTIMIZATION_LOOP_UI,
-    ORANGE_STYLE,
-    AgentLoopUI,
-    CancelledResult,
-    ConfirmationToolNames,
-    CreateFileArgs,
-    GraphData,
-    RawToolArgs,
-    ReplaceCodeArgs,
-    ShellCommandArgs,
-    ToolArgs,
-)
-from .utils.dependencies import has_semantic_dependencies
-from .utils.cache import EvictingCache
+from .config import settings
+from .context import app_context
+from .graph_export import export_graph_to_file, prompt_for_unignored_directories
+from .interactive_loop import run_chat_loop, run_optimization_loop
+from .types_defs import ConfirmationToolNames, GraphData
+from .ui import style
 
 if TYPE_CHECKING:
-    from prompt_toolkit.key_binding import KeyPressEvent
     from pydantic_ai import Agent
     from pydantic_ai.messages import ModelMessage
-    from pydantic_ai.models import Model
-
-
-class _ServiceBundle:
-    __slots__ = (
-        "code_retriever",
-        "file_reader",
-        "file_writer",
-        "file_editor",
-        "shell_commander",
-        "directory_lister",
-        "document_analyzer",
-    )
-
-    def __init__(
-        self,
-        *,
-        code_retriever: CodeRetriever,
-        file_reader: FileReader,
-        file_writer: FileWriter,
-        file_editor: FileEditor,
-        shell_commander: ShellCommander,
-        directory_lister: DirectoryLister,
-        document_analyzer: DocumentAnalyzer,
-    ) -> None:
-        self.code_retriever = code_retriever
-        self.file_reader = file_reader
-        self.file_writer = file_writer
-        self.file_editor = file_editor
-        self.shell_commander = shell_commander
-        self.directory_lister = directory_lister
-        self.document_analyzer = document_analyzer
-
-
-_SERVICE_CACHE_LOCK = threading.Lock()
-_SERVICE_CACHE = EvictingCache[tuple[str, int], _ServiceBundle](
-    max_entries=settings.SERVICE_CACHE_MAX_ENTRIES,
-    max_size=10**18,  # effectively disabled; LRU by entry count
-    size_func=lambda _v: 1,
-)
-
-
-def style(
-    text: str, color: cs.Color, modifier: cs.StyleModifier = cs.StyleModifier.BOLD
-) -> str:
-    if modifier == cs.StyleModifier.NONE:
-        return f"[{color}]{text}[/{color}]"
-    return f"[{modifier} {color}]{text}[/{modifier} {color}]"
-
-
-def dim(text: str) -> str:
-    return f"[{cs.StyleModifier.DIM}]{text}[/{cs.StyleModifier.DIM}]"
-
-
-app_context = AppContext()
-
-
-def init_session_log(project_root: Path) -> Path:
-    log_dir = project_root / cs.TMP_DIR
-    log_dir.mkdir(exist_ok=True)
-    app_context.session.log_file = (
-        log_dir / f"{cs.SESSION_LOG_PREFIX}{uuid.uuid4().hex[:8]}{cs.SESSION_LOG_EXT}"
-    )
-    with open(app_context.session.log_file, "w") as f:
-        f.write(cs.SESSION_LOG_HEADER)
-    return app_context.session.log_file
-
-
-def log_session_event(event: str) -> None:
-    if app_context.session.log_file:
-        with open(app_context.session.log_file, "a") as f:
-            f.write(f"{event}\n")
-
-
-def get_session_context() -> str:
-    if app_context.session.log_file and app_context.session.log_file.exists():
-        content = app_context.session.log_file.read_text(encoding="utf-8")
-        return f"{cs.SESSION_CONTEXT_START}{content}{cs.SESSION_CONTEXT_END}"
-    return ""
 
 
 def _print_unified_diff(target: str, replacement: str, path: str) -> None:
@@ -289,22 +168,6 @@ def _process_tool_approvals(
             deferred_results.approvals[call.tool_call_id] = True
 
     return deferred_results
-
-
-def _setup_common_initialization(repo_path: str) -> Path:
-    logger.remove()
-    logger.add(sys.stdout, format=cs.LOG_FORMAT)
-
-    project_root = Path(repo_path).resolve()
-    tmp_dir = project_root / cs.TMP_DIR
-    if tmp_dir.exists():
-        if tmp_dir.is_dir():
-            shutil.rmtree(tmp_dir)
-        else:
-            tmp_dir.unlink()
-    tmp_dir.mkdir()
-
-    return project_root
 
 
 def _prewarm_semantic_model() -> None:
@@ -869,11 +732,11 @@ def _get_grouping_key(path: str) -> str:
 
 
 def _group_paths_by_pattern(paths: set[str]) -> dict[str, list[str]]:
-    groups: dict[str, list[str]] = {}
+    from collections import defaultdict
+
+    groups: defaultdict[str, list[str]] = defaultdict(list)
     for path in paths:
         key = _get_grouping_key(path)
-        if key not in groups:
-            groups[key] = []
         groups[key].append(path)
     for group_paths in groups.values():
         group_paths.sort()
@@ -1101,7 +964,7 @@ def _initialize_services_and_agent(
 
 
 def main_single_query(repo_path: str, batch_size: int, question: str) -> None:
-    _setup_common_initialization(repo_path)
+    setup_common_initialization(repo_path)
     # (H) Override logger to stderr so stdout is clean for scripted output
     logger.remove()
     logger.add(sys.stderr, level=cs.LOG_LEVEL_ERROR, format=cs.LOG_FORMAT)
@@ -1113,7 +976,7 @@ def main_single_query(repo_path: str, batch_size: int, question: str) -> None:
 
 
 async def main_async(repo_path: str, batch_size: int) -> None:
-    project_root = _setup_common_initialization(repo_path)
+    project_root = setup_common_initialization(repo_path)
 
     table = _create_configuration_table(repo_path)
     app_context.console.print(table)
@@ -1127,8 +990,8 @@ async def main_async(repo_path: str, batch_size: int) -> None:
             )
         )
 
-        rag_agent, tool_names = _initialize_services_and_agent(repo_path, ingestor)
-        _prewarm_semantic_model()
+        rag_agent, tool_names = initialize_services_and_agent(repo_path, ingestor)
+        prewarm_semantic_model()
         await run_chat_loop(rag_agent, [], project_root, tool_names)
 
 
@@ -1140,7 +1003,7 @@ async def main_optimize_async(
     cypher: str | None = None,
     batch_size: int | None = None,
 ) -> None:
-    project_root = _setup_common_initialization(target_repo_path)
+    project_root = setup_common_initialization(target_repo_path)
 
     update_model_settings(orchestrator, cypher)
 

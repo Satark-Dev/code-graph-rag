@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 
+from contextlib import contextmanager
 from loguru import logger
 from pydantic_ai import Tool
 
@@ -19,49 +20,66 @@ from ..utils.dependencies import has_semantic_dependencies
 from . import tool_descriptions as td
 
 
-async def semantic_code_search_async(
-    query: str, top_k: int = 5, ingestor: QueryProtocol | None = None
-) -> list[SemanticSearchResult]:
-    if not has_semantic_dependencies():
-        logger.warning(ex.SEMANTIC_EXTRA)
-        return []
+@contextmanager
+def _maybe_owned_ingestor(ingestor: QueryProtocol | None):
+    """
+    Yield an ingestor, creating and managing its lifetime if not provided.
+    """
+    if ingestor is not None:
+        yield ingestor
+        return
 
-    try:
-        from ..config import settings
-        from ..embedder import embed_code
-        from ..services.semantic_reranker import rerank_semantic_results
-        from ..vector_store import search_embeddings
+    from ..config import settings
+    from ..services.graph_service import MemgraphIngestor
 
-        query_embedding = embed_code(query)
+    owned = MemgraphIngestor(
+        host=settings.MEMGRAPH_HOST,
+        port=settings.MEMGRAPH_PORT,
+        batch_size=cs.SEMANTIC_BATCH_SIZE,
+    )
+    with owned:
+        yield owned
 
-        candidate_k = top_k
-        if settings.SEMANTIC_RERANK_ENABLED:
-            candidate_k = max(int(top_k), int(settings.SEMANTIC_RERANK_CANDIDATES))
 
-        search_results = search_embeddings(query_embedding, top_k=candidate_k)
+class SemanticSearchService:
+    """Core semantic code search implementation (search + rerank)."""
 
-        if not search_results:
-            logger.info(ls.SEMANTIC_NO_MATCH.format(query=query))
+    def __init__(self, ingestor: QueryProtocol | None = None) -> None:
+        self._ingestor = ingestor
+
+    async def search(
+        self,
+        query: str,
+        top_k: int = 5,
+    ) -> list[SemanticSearchResult]:
+        if not has_semantic_dependencies():
+            logger.warning(ex.SEMANTIC_EXTRA)
             return []
 
-        node_ids = [node_id for node_id, _ in search_results]
-
-        should_close = False
-        if ingestor is None:
-            from ..services.graph_service import MemgraphIngestor
-
-            ingestor = MemgraphIngestor(
-                host=settings.MEMGRAPH_HOST,
-                port=settings.MEMGRAPH_PORT,
-                batch_size=cs.SEMANTIC_BATCH_SIZE,
-            )
-            ingestor.__enter__()
-            should_close = True
-
         try:
-            cypher_query = build_nodes_by_ids_query(node_ids)
-            params = {str(i): node_id for i, node_id in enumerate(node_ids)}
-            results = ingestor.fetch_all(cypher_query, params)
+            from ..embedder import embed_code
+            from ..services.semantic_reranker import rerank_semantic_results
+            from ..vector_store import search_embeddings
+            from ..config import settings
+
+            query_embedding = embed_code(query)
+
+            candidate_k = top_k
+            if settings.SEMANTIC_RERANK_ENABLED:
+                candidate_k = max(int(top_k), int(settings.SEMANTIC_RERANK_CANDIDATES))
+
+            search_results = search_embeddings(query_embedding, top_k=candidate_k)
+
+            if not search_results:
+                logger.info(ls.SEMANTIC_NO_MATCH.format(query=query))
+                return []
+
+            node_ids = [node_id for node_id, _ in search_results]
+
+            with _maybe_owned_ingestor(self._ingestor) as active_ingestor:
+                cypher_query = build_nodes_by_ids_query(node_ids)
+                params = {str(i): node_id for i, node_id in enumerate(node_ids)}
+                results = active_ingestor.fetch_all(cypher_query, params)
 
             results_map = {res["node_id"]: res for res in results}
 
@@ -87,9 +105,15 @@ async def semantic_code_search_async(
                         )
                     )
 
-            if settings.SEMANTIC_RERANK_ENABLED and formatted_results:
+            if not formatted_results:
+                logger.info(ls.SEMANTIC_NO_MATCH.format(query=query))
+                return []
+
+            if settings.SEMANTIC_RERANK_ENABLED:
                 ordered_ids = await rerank_semantic_results(
-                    query=query, candidates=formatted_results, top_k=top_k
+                    query=query,
+                    candidates=formatted_results,
+                    top_k=top_k,
                 )
                 if ordered_ids:
                     by_id = {int(r["node_id"]): r for r in formatted_results}
@@ -108,57 +132,66 @@ async def semantic_code_search_async(
                     formatted_results = reranked
 
             logger.info(
-                ls.SEMANTIC_FOUND.format(count=len(formatted_results), query=query)
+                ls.SEMANTIC_FOUND.format(
+                    count=len(formatted_results),
+                    query=query,
+                )
             )
             return formatted_results[:top_k]
-        finally:
-            if should_close:
-                ingestor.__exit__(None, None, None)
 
-    except Exception as e:
-        logger.error(ls.SEMANTIC_FAILED.format(query=query, error=e))
-        return []
+        except Exception as e:  # noqa: BLE001
+            logger.error(ls.SEMANTIC_FAILED.format(query=query, error=e))
+            return []
+
+
+async def semantic_code_search_async(
+    query: str,
+    top_k: int = 5,
+    ingestor: QueryProtocol | None = None,
+) -> list[SemanticSearchResult]:
+    """Async‑first API that delegates to SemanticSearchService."""
+    service = SemanticSearchService(ingestor=ingestor)
+    return await service.search(query, top_k=top_k)
 
 
 def semantic_code_search(
-    query: str, top_k: int = 5, ingestor: QueryProtocol | None = None
+    query: str,
+    top_k: int = 5,
+    ingestor: QueryProtocol | None = None,
 ) -> list[SemanticSearchResult]:
     """
     Sync wrapper for semantic search (and optional rerank).
-
-    Prefer `semantic_code_search_async` when already in an event loop.
+ 
+    This function **must not** be called from within an active asyncio event loop.
+    Prefer `semantic_code_search_async` in async contexts.
     """
     try:
         asyncio.get_running_loop()
+        # If we get here, we're inside an event loop – using this sync API would hang.
+        raise RuntimeError(ex.SEMANTIC_SYNC_IN_EVENT_LOOP)
     except RuntimeError:
-        return asyncio.run(semantic_code_search_async(query, top_k, ingestor=ingestor))
-    return []
+        # No running loop: safe to drive the async API synchronously.
+        return asyncio.run(
+            semantic_code_search_async(
+                query,
+                top_k,
+                ingestor=ingestor,
+            )
+        )
 
 
 def get_function_source_code(
     node_id: int, ingestor: QueryProtocol | None = None
 ) -> str | None:
     try:
-        from ..config import settings
         from ..utils.source_extraction import (
             extract_source_lines,
             validate_source_location,
         )
+        from ..config import settings  # kept for settings import side-effects if any
 
-        should_close = False
-        if ingestor is None:
-            from ..services.graph_service import MemgraphIngestor
-
-            ingestor = MemgraphIngestor(
-                host=settings.MEMGRAPH_HOST,
-                port=settings.MEMGRAPH_PORT,
-                batch_size=cs.SEMANTIC_BATCH_SIZE,
-            )
-            ingestor.__enter__()
-            should_close = True
-
-        try:
-            results = ingestor.fetch_all(
+        with _maybe_owned_ingestor(ingestor) as active_ingestor:
+            results = active_ingestor.fetch_all(
                 CYPHER_GET_FUNCTION_SOURCE_LOCATION, {"node_id": node_id}
             )
 
@@ -171,17 +204,12 @@ def get_function_source_code(
             start_line = result.get("start_line")
             end_line = result.get("end_line")
 
-            is_valid, file_path_obj = validate_source_location(
-                file_path, start_line, end_line
-            )
+            is_valid, file_path_obj = validate_source_location(file_path, start_line, end_line)
             if not is_valid or file_path_obj is None:
                 logger.warning(ls.SEMANTIC_INVALID_LOCATION.format(id=node_id))
                 return None
 
             return extract_source_lines(file_path_obj, start_line, end_line)
-        finally:
-            if should_close:
-                ingestor.__exit__(None, None, None)
 
     except Exception as e:
         logger.error(ls.SEMANTIC_SOURCE_FAILED.format(id=node_id, error=e))
@@ -189,11 +217,20 @@ def get_function_source_code(
 
 
 def create_semantic_search_tool(ingestor: QueryProtocol | None = None) -> Tool:
+    """
+    Create the agent-facing semantic search tool.
+
+    The underlying search/rerank/formatting is handled by SemanticSearchService;
+    this wrapper is responsible only for lightweight caching/throttling and
+    string formatting.
+    """
     last_empty_query: str | None = None
     last_empty_ts = 0.0
     last_any_query: str | None = None
     last_any_ts = 0.0
     last_any_response: str | None = None
+
+    service = SemanticSearchService(ingestor=ingestor)
 
     async def semantic_search_functions(query: str, top_k: int = 5) -> str:
         from ..config import settings
@@ -204,6 +241,8 @@ def create_semantic_search_tool(ingestor: QueryProtocol | None = None) -> Tool:
         nonlocal last_any_query, last_any_ts
         nonlocal last_any_response
         now = time.monotonic()
+
+        # Return cached positive result if the same query was asked recently.
         if (
             last_any_query == query
             and (now - last_any_ts) < settings.SEMANTIC_SEARCH_REPEAT_COOLDOWN_SECONDS
@@ -211,13 +250,15 @@ def create_semantic_search_tool(ingestor: QueryProtocol | None = None) -> Tool:
             if last_any_response is not None:
                 return last_any_response
             return cs.MSG_SEMANTIC_NO_RESULTS.format(query=query)
+
+        # Throttle repeated empty-result queries.
         if (
             last_empty_query == query
             and (now - last_empty_ts) < settings.SEMANTIC_SEARCH_EMPTY_COOLDOWN_SECONDS
         ):
             return cs.MSG_SEMANTIC_NO_RESULTS.format(query=query)
 
-        results = await semantic_code_search_async(query, top_k, ingestor=ingestor)
+        results = await service.search(query=query, top_k=top_k)
         last_any_query = query
         last_any_ts = now
 

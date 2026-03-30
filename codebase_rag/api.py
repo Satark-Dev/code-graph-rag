@@ -5,68 +5,64 @@ from fastapi import FastAPI
 from loguru import logger
 
 from . import logs as ls
+from .bootstrap import connect_memgraph, prewarm_semantic_model, warm_core_db
 from .config import kafka_consumer_reload_guard_allows_start, settings
-from .main import app_context, connect_memgraph
+from .context import app_context
 from .services.semantic_reranker import aclose_deepinfra_client
 from .utils.dependencies import has_semantic_dependencies
+
 
 # Configure confirmation prompts in API context based on CLI flag
 app_context.session.confirm_edits = not (os.environ.get("CGR_NO_CONFIRM") == "1")
 
 
-@asynccontextmanager
-async def lifespan(_app: FastAPI):
-    ingestor = None
-    try:
-        ingestor = connect_memgraph(settings.resolve_batch_size(None))
-        ingestor.__enter__()
-        _app.state.ingestor = ingestor
-    except Exception:
-        if ingestor is not None:
-            ingestor.__exit__(None, None, None)
-        raise
-
-    if settings.SEMANTIC_SEARCH_ENABLED and has_semantic_dependencies():
-        try:
-            from .embedder import prewarm_embeddings
-
-            logger.info(ls.SEMANTIC_PREWARM_START)
-            prewarm_embeddings()
-            logger.info(ls.SEMANTIC_PREWARM_COMPLETE)
-        except Exception as e:
-            logger.warning(ls.SEMANTIC_PREWARM_FAILED.format(error=e))
-
-    try:
-        from .utils.org_region_resolver import get_org_region_resolver
-
-        get_org_region_resolver().warm_core_connection()
-    except Exception as e:
-        logger.warning("Core DB warm failed: {}", e)
+async def _start_kafka_producer() -> bool:
+    if not kafka_consumer_reload_guard_allows_start():
+        logger.info("Kafka producer start skipped by reload guard.")
+        return False
 
     try:
         from .services.kafka.producer import kafka_service
 
         await kafka_service.start()
-    except Exception as e:
+        return True
+    except Exception as e:  # noqa: BLE001
         logger.warning("Kafka producer failed to start: {}", e)
+        return False
 
-    yield
 
+async def _stop_kafka_producer() -> None:
     try:
         from .services.kafka.producer import kafka_service
 
         await kafka_service.stop()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning("Kafka producer stop failed: {}", e)
 
-    ingestor = getattr(_app.state, "ingestor", None)
-    if ingestor is not None:
-        ingestor.__exit__(None, None, None)
+
+async def _shutdown_clients(kafka_started: bool) -> None:
+    if kafka_started:
+        await _stop_kafka_producer()
 
     try:
         await aclose_deepinfra_client()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning("DeepInfra client shutdown failed: {}", e)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    async with connect_memgraph(settings.resolve_batch_size(None)) as ingestor:
+        _app.state.ingestor = ingestor
+
+        prewarm_semantic_model()
+        warm_core_db()
+        kafka_started = await _start_kafka_producer()
+
+        try:
+            yield
+        finally:
+            await _shutdown_clients(kafka_started)
 
 
 app = FastAPI(

@@ -70,6 +70,12 @@ AUTH_INCOMPLETE = (
     "Either provide both or neither."
 )
 
+# (H) Semantic search errors
+SEMANTIC_SYNC_IN_EVENT_LOOP = (
+    "semantic_code_search (sync) was called from within an active asyncio event loop. "
+    "Use semantic_code_search_async instead."
+)
+
 # (H) Access control errors (used with raise)
 ACCESS_DENIED = "Access denied: Cannot access files outside the project root."
 DOC_UNSUPPORTED_PROVIDER = "DocumentAnalyzer does not support the 'local' LLM provider."
