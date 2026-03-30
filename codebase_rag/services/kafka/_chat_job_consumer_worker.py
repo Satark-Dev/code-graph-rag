@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 from uuid import uuid4
 
@@ -17,15 +16,12 @@ from ...services.index_guard import (
     RepoNotIndexedError,
     assert_repo_indexed,
 )
-from ...utils.org_tool_finding_store import persist_org_tool_finding_scores
+from ...utils.org_tool_finding_store import (
+    get_chat_finding_metadata,
+    persist_org_tool_finding_scores,
+)
 from .chat_job_payload import ChatJobPayloadV1
-
-
-def _resolve_repo_path(repo_path: str | None) -> str:
-    resolved = repo_path or settings.TARGET_REPO_PATH
-    if not resolved or not str(resolved).strip():
-        raise ValueError("repo_path is required in payload or TARGET_REPO_PATH")
-    return os.path.abspath(resolved)
+from .repo_manager import RepoManager
 
 
 def _validate_models_for_payload(payload: ChatJobPayloadV1) -> None:
@@ -85,6 +81,7 @@ async def _execute_chat_job_pipeline(
         org_tool_findings_ids=payload.org_tool_findings_ids,
         ingestor=ingestor,
         target_repo_path=target_repo_path,
+        invocation_id=invocation,
     )
     response_data["run_id"] = str(uuid4())
 
@@ -105,16 +102,56 @@ async def process_chat_job_message(
     *,
     payload: ChatJobPayloadV1,
     ingestor: Any,
+    repo_manager: RepoManager,
     key: str | None,
 ) -> bool:
     """
     Returns True if the message offset may be committed (success or poison skip).
     Returns False to leave the offset uncommitted (retry after rebalance/restart).
     """
-    invocation = payload.invocation_id or key or str(uuid4())[:8]
-    target_repo_path = _resolve_repo_path(payload.repo_path)
+    invocation = payload.invocation_id
+    target_repo_path = None
 
     try:
+        # Resolve repo URL and branch name from the first finding
+        repo_url, branch_name = get_chat_finding_metadata(
+            payload.org_tool_findings_ids[0],
+            payload.org_id,
+        )
+
+        if not repo_url:
+            logger.error(
+                "Kafka chat job {}: could not resolve repo_url from finding {}",
+                invocation,
+                payload.org_tool_findings_ids[0],
+            )
+            return True  # Skip poison pill
+
+        # Batch Validation: Ensure all findings belong to the same repo/branch
+        for finding_id in payload.org_tool_findings_ids[1:]:
+            curr_url, curr_branch = get_chat_finding_metadata(
+                finding_id,
+                payload.org_id,
+            )
+            if curr_url != repo_url or curr_branch != branch_name:
+                logger.error(
+                    "Kafka chat job {}: mixed repository context detected. "
+                    "{} ({}) != {} ({})",
+                    invocation,
+                    repo_url,
+                    branch_name,
+                    curr_url,
+                    curr_branch,
+                )
+                return True  # Skip poison pill
+
+        # Ensuring repository exists in the deterministic process folder
+        target_repo_path = await repo_manager.ensure_cloned(
+            repo_url=repo_url,
+            org_id=payload.org_id,
+            branch=branch_name,
+        )
+
         _validate_models_for_payload(payload)
     except ValueError as e:
         logger.warning(

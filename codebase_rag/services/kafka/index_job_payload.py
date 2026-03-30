@@ -12,9 +12,11 @@ class IndexJobPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     org_id: str
-    repo_path: str
+    repo_url: str
+    org_tool_finding_id: str
     clean: bool = True
     exclude: list[str] | None = None
+    invocation_id: str
 
     @field_validator("org_id")
     @classmethod
@@ -24,12 +26,20 @@ class IndexJobPayload(BaseModel):
             raise ValueError("org_id is required")
         return v
 
-    @field_validator("repo_path")
+    @field_validator("org_tool_finding_id")
     @classmethod
-    def _repo_non_blank(cls, value: str) -> str:
+    def _finding_non_blank(cls, value: str) -> str:
         v = value.strip()
         if not v:
-            raise ValueError("repo_path is required")
+            raise ValueError("org_tool_finding_id is required")
+        return v
+
+    @field_validator("repo_url")
+    @classmethod
+    def _repo_url_non_blank(cls, value: str) -> str:
+        v = value.strip()
+        if not v:
+            raise ValueError("repo_url is required")
         return v
 
     @classmethod

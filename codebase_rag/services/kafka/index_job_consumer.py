@@ -27,9 +27,16 @@ async def run_index_job_consumer(
             await kafka_service.stop()
         return
 
+    from .repo_manager import RepoManager
+
+    repo_manager = RepoManager()
+    context = {"ingestor": ingestor, "repo_manager": repo_manager}
+
     try:
-        await run_index_job_consumer_loop(ingestor=ingestor, stop_event=stop_event)
+        await run_index_job_consumer_loop(context=context, stop_event=stop_event)
     finally:
+        repo_manager.cleanup_all()
+
         if stop_kafka_service_on_exit:
             await kafka_service.stop()
 

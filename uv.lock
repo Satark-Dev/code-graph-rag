@@ -66,6 +66,25 @@ wheels = [
 ]
 
 [[package]]
+name = "anthropic"
+version = "0.86.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "distro" },
+    { name = "docstring-parser" },
+    { name = "httpx" },
+    { name = "jiter" },
+    { name = "pydantic" },
+    { name = "sniffio" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/37/7a/8b390dc47945d3169875d342847431e5f7d5fa716b2e37494d57cfc1db10/anthropic-0.86.0.tar.gz", hash = "sha256:60023a7e879aa4fbb1fed99d487fe407b2ebf6569603e5047cfe304cebdaa0e5", size = 583820, upload-time = "2026-03-18T18:43:08.017Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/63/5f/67db29c6e5d16c8c9c4652d3efb934d89cb750cad201539141781d8eae14/anthropic-0.86.0-py3-none-any.whl", hash = "sha256:9d2bbd339446acce98858c5627d33056efe01f70435b22b63546fe7edae0cd57", size = 469400, upload-time = "2026-03-18T18:43:06.526Z" },
+]
+
+[[package]]
 name = "anyio"
 version = "4.12.1"
 source = { registry = "https://pypi.org/simple" }
@@ -338,11 +357,12 @@ dependencies = [
     { name = "diff-match-patch" },
     { name = "fastapi" },
     { name = "huggingface-hub", extra = ["hf-xet"] },
+    { name = "kafka-python-ng" },
     { name = "loguru" },
     { name = "mcp" },
     { name = "prompt-toolkit" },
     { name = "protobuf" },
-    { name = "pydantic-ai-slim", extra = ["google", "openai", "vertexai"] },
+    { name = "pydantic-ai-slim", extra = ["anthropic", "google", "openai", "vertexai"] },
     { name = "pydantic-settings" },
     { name = "pymgclient" },
     { name = "python-dotenv" },
@@ -417,13 +437,14 @@ requires-dist = [
     { name = "diff-match-patch", specifier = ">=20241021" },
     { name = "fastapi", specifier = ">=0.111.0" },
     { name = "huggingface-hub", extras = ["hf-xet"], specifier = ">=1.7.2" },
+    { name = "kafka-python-ng", specifier = ">=2.2.3" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "mcp", specifier = ">=1.21.1" },
     { name = "pgvector", marker = "extra == 'semantic'", specifier = ">=0.3.2" },
     { name = "prompt-toolkit", specifier = ">=3.0.52" },
     { name = "protobuf", specifier = ">=6.33.5" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'semantic'", specifier = ">=3.2.3" },
-    { name = "pydantic-ai-slim", extras = ["google", "openai", "vertexai"], specifier = ">=1.18.0" },
+    { name = "pydantic-ai-slim", extras = ["anthropic", "google", "openai", "vertexai"], specifier = ">=1.18.0" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
     { name = "pymgclient", specifier = ">=1.4.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.4.1" },
@@ -701,6 +722,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/91/9b/4a2ea29aeba62471211598dac5d96825bb49348fa07e906ea930394a83ce/docker-7.1.0.tar.gz", hash = "sha256:ad8c70e6e3f8926cb8a92619b832b4ea5299e2831c14284663184e200546fa6c", size = 117834, upload-time = "2024-05-23T11:13:57.216Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e3/26/57c6fb270950d476074c087527a558ccb6f4436657314bfb6cdf484114c4/docker-7.1.0-py3-none-any.whl", hash = "sha256:c96b93b7f0a746f9e77d325bcfb87422a3d8bd4f03136ae8a85b37f1898d5fc0", size = 147774, upload-time = "2024-05-23T11:13:55.01Z" },
+]
+
+[[package]]
+name = "docstring-parser"
+version = "0.17.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b2/9d/c3b43da9515bd270df0f80548d9944e389870713cc1fe2b8fb35fe2bcefd/docstring_parser-0.17.0.tar.gz", hash = "sha256:583de4a309722b3315439bb31d64ba3eebada841f2e2cee23b99df001434c912", size = 27442, upload-time = "2025-07-21T07:35:01.868Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/55/e2/2537ebcff11c1ee1ff17d8d0b6f4db75873e3b0fb32c2d4a2ee31ecb310a/docstring_parser-0.17.0-py3-none-any.whl", hash = "sha256:cf2569abd23dce8099b300f9b4fa8191e9582dda731fd533daf54c4551658708", size = 36896, upload-time = "2025-07-21T07:35:00.684Z" },
 ]
 
 [[package]]
@@ -1124,6 +1154,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/19/74/a633ee74eb36c44aa6d1095e7cc5569bebf04342ee146178e2d36600708b/jsonschema_specifications-2025.9.1.tar.gz", hash = "sha256:b540987f239e745613c7a9176f3edb72b832a4ac465cf02712288397832b5e8d", size = 32855, upload-time = "2025-09-08T01:34:59.186Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/41/45/1a4ed80516f02155c51f51e8cedb3c1902296743db0bbc66608a0db2814f/jsonschema_specifications-2025.9.1-py3-none-any.whl", hash = "sha256:98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe", size = 18437, upload-time = "2025-09-08T01:34:57.871Z" },
+]
+
+[[package]]
+name = "kafka-python-ng"
+version = "2.2.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ce/04/1d65bdf3f0103a08710e226b851de4b357ac702f1cadabf6128bab7518a7/kafka_python_ng-2.2.3.tar.gz", hash = "sha256:f79f28e10ade9b5a9860b2ec15b7cc8dc510d5702f5a399430478cff5f93a05a", size = 330644, upload-time = "2024-10-02T16:56:58.639Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0f/61/22e778f642465a157c449782300d8817ebbc106794a8a7ebe88cbb846b05/kafka_python_ng-2.2.3-py2.py3-none-any.whl", hash = "sha256:adc6e82147c441ca4ae1f22e291fc08efab0d10971cbd4aa1481d2ffa38e9480", size = 232824, upload-time = "2024-10-02T16:56:56.932Z" },
 ]
 
 [[package]]
@@ -1886,6 +1925,9 @@ wheels = [
 ]
 
 [package.optional-dependencies]
+anthropic = [
+    { name = "anthropic" },
+]
 google = [
     { name = "google-genai" },
 ]

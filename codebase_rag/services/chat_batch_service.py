@@ -50,6 +50,7 @@ async def _process_one_finding(
     org_tool_findings_id: str,
     ingestor: Any,
     target_repo_path: str,
+    invocation_id: str | None = None,
 ) -> tuple[dict[str, Any], tuple[str, float, str | None]]:
     finding_payload = await fetch_org_tool_finding(
         org_id=org_id, org_tool_findings_id=org_tool_findings_id
@@ -59,6 +60,8 @@ async def _process_one_finding(
         request_query=per_request_query,
         ingestor=ingestor,
         target_repo_path=target_repo_path,
+        org_id=org_id,
+        invocation_id=invocation_id,
     )
     normalize_scoring_output(per_response)
 
@@ -87,6 +90,7 @@ async def process_chat_for_findings_ids(
     org_tool_findings_ids: list[str],
     ingestor: Any,
     target_repo_path: str,
+    invocation_id: str | None = None,
 ) -> tuple[dict[str, Any], list[tuple[str, float, str | None]]]:
     """
     Run independent chat pipeline for each finding id (in parallel),
@@ -98,6 +102,7 @@ async def process_chat_for_findings_ids(
             org_tool_findings_id=finding_id,
             ingestor=ingestor,
             target_repo_path=target_repo_path,
+            invocation_id=invocation_id,
         )
         for finding_id in org_tool_findings_ids
     ]

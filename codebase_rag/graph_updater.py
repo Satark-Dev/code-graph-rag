@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import sys
 from collections import OrderedDict, defaultdict
 from collections.abc import Callable, ItemsView, KeysView
@@ -30,70 +29,12 @@ from .types_defs import (
 )
 from .utils.dependencies import has_semantic_dependencies
 from .utils.fqn_resolver import find_function_source_by_fqn
-from .utils.path_utils import should_skip_path
 from .utils.source_extraction import SourceFileCache, extract_source_with_fallback
 
 type FileHashCache = dict[str, str]
 
 
-class FileCollector:
-    def __init__(
-        self,
-        repo_path: Path,
-        *,
-        single_file: Path | None,
-        unignore_paths: frozenset[str] | None,
-        exclude_paths: frozenset[str] | None,
-    ) -> None:
-        self.repo_path = repo_path
-        self._single_file = single_file
-        self.unignore_paths = unignore_paths
-        self.exclude_paths = exclude_paths
 
-    def _should_keep_dir(self, dirname: str, dir_prefix: str) -> bool:
-        if dirname not in cs.IGNORE_PATTERNS and (
-            not self.exclude_paths or dirname not in self.exclude_paths
-        ):
-            return True
-        return bool(
-            self.unignore_paths
-            and any(
-                u.startswith(f"{dir_prefix}{dirname}/") or u == f"{dir_prefix}{dirname}"
-                for u in self.unignore_paths
-            )
-        )
-
-    def collect(self) -> list[Path]:
-        if self._single_file is not None:
-            if not should_skip_path(
-                self._single_file,
-                self.repo_path,
-                exclude_paths=self.exclude_paths,
-                unignore_paths=self.unignore_paths,
-            ):
-                return [self._single_file]
-            return []
-
-        eligible: list[Path] = []
-        hash_name = cs.HASH_CACHE_FILENAME
-        for dirpath, dirnames, filenames in os.walk(str(self.repo_path)):
-            rel_dir = Path(dirpath).relative_to(self.repo_path).as_posix()
-            dir_prefix = "" if rel_dir == "." else f"{rel_dir}/"
-            dirnames[:] = sorted(
-                d for d in dirnames if self._should_keep_dir(d, dir_prefix)
-            )
-            for fname in sorted(filenames):
-                if fname == hash_name:
-                    continue
-                filepath = Path(dirpath) / fname
-                if not should_skip_path(
-                    filepath,
-                    self.repo_path,
-                    exclude_paths=self.exclude_paths,
-                    unignore_paths=self.unignore_paths,
-                ):
-                    eligible.append(filepath)
-        return eligible
 
 
 class EmbeddingGenerator:
@@ -344,6 +285,9 @@ class FunctionRegistryTrie:
         self._entries[qualified_name] = func_type
 
         parts = qualified_name.split(cs.SEPARATOR_DOT)
+        if self._simple_name_lookup is not None and parts:
+            self._simple_name_lookup[parts[-1]].add(qualified_name)
+
         current: TrieNode = self.root
 
         for part in parts:
@@ -374,9 +318,15 @@ class FunctionRegistryTrie:
         if qualified_name not in self._entries:
             return
 
-        del self._entries[qualified_name]
-
         parts = qualified_name.split(cs.SEPARATOR_DOT)
+        if self._simple_name_lookup is not None and parts:
+            simple_name = parts[-1]
+            if simple_name in self._simple_name_lookup:
+                self._simple_name_lookup[simple_name].discard(qualified_name)
+                if not self._simple_name_lookup[simple_name]:
+                    del self._simple_name_lookup[simple_name]
+
+        del self._entries[qualified_name]
         self._cleanup_trie_path(parts, self.root)
 
     def _cleanup_trie_path(self, parts: list[str], node: TrieNode) -> bool:
@@ -592,12 +542,7 @@ class GraphUpdater:
         self.unignore_paths = unignore_paths
         self.exclude_paths = exclude_paths
 
-        self.file_collector = FileCollector(
-            repo_path=self.repo_path,
-            single_file=self._single_file,
-            unignore_paths=self.unignore_paths,
-            exclude_paths=self.exclude_paths,
-        )
+        self.eligible_files: list[Path] = []
         self.embedding_generator = EmbeddingGenerator(
             ingestor=self.ingestor,
             repo_path=self.repo_path,
@@ -631,7 +576,11 @@ class GraphUpdater:
         logger.info(ls.ENSURING_PROJECT, name=self.project_name)
 
         logger.info(ls.PASS_1_STRUCTURE)
-        self.factory.structure_processor.identify_structure()
+        self.eligible_files = (
+            self.factory.structure_processor.identify_structure(collect_files=True)
+            if self._single_file is None
+            else [self._single_file]
+        )
 
         logger.info(ls.PASS_2_FILES)
         self._process_files(force=force)
@@ -685,16 +634,13 @@ class GraphUpdater:
                 self.simple_name_lookup[simple_name] = new_qn_set
                 logger.debug(ls.CLEANED_SIMPLE_NAME, name=simple_name)
 
-    def _collect_eligible_files(self) -> list[Path]:
-        return self.file_collector.collect()
-
     def _process_files(self, force: bool = False) -> None:
+        eligible = self.eligible_files
         cache_path = self.repo_path / cs.HASH_CACHE_FILENAME
         old_hashes = _load_hash_cache(cache_path) if not force else {}
         if force:
             logger.info(ls.INCREMENTAL_FORCE)
 
-        eligible_files = self._collect_eligible_files()
         new_hashes: FileHashCache = {}
         skipped_count = 0
         changed_count = 0
@@ -709,9 +655,9 @@ class GraphUpdater:
             TextColumn("[progress.description]{task.description}"),
             transient=True,
         ) as progress:
-            task = progress.add_task("", total=len(eligible_files))
+            task = progress.add_task("", total=len(eligible))
 
-            for filepath in eligible_files:
+            for filepath in eligible:
                 file_key, current_hash, is_changed = self._handle_file_change(
                     filepath, old_hashes, force
                 )

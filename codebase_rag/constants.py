@@ -248,10 +248,7 @@ CLI_MSG_EXPORTING_DATA = "Exporting graph data..."
 CLI_MSG_OPTIMIZATION_TERMINATED = "\nOptimization session terminated by user."
 CLI_MSG_MCP_TERMINATED = "\nMCP server terminated by user."
 PACKAGE_NAME = "code-graph-rag"
-CLI_MSG_VERSION = "{package} version {version}"
-CLI_MSG_HINT_TARGET_REPO = (
-    "\nHint: Make sure TARGET_REPO_PATH environment variable is set."
-)
+CLI_MSG_VERSION = f"{PACKAGE_NAME} version {{version}}"
 CLI_MSG_GRAPH_SUMMARY = "Graph Summary:"
 CLI_MSG_CONNECTING_STATS = "Fetching graph statistics..."
 CLI_STATS_NODE_TITLE = "Node Statistics"
@@ -702,7 +699,6 @@ TABLE_ROW_OLLAMA_ENDPOINT = "Ollama Endpoint"
 TABLE_ROW_OLLAMA_ORCHESTRATOR = "Ollama Endpoint (Orchestrator)"
 TABLE_ROW_OLLAMA_CYPHER = "Ollama Endpoint (Cypher)"
 TABLE_ROW_EDIT_CONFIRMATION = "Edit Confirmation"
-TABLE_ROW_TARGET_REPOSITORY = "Target Repository"
 
 # (H) UI status messages
 MSG_CONNECTED_MEMGRAPH = "Successfully connected to Memgraph."

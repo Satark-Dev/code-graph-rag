@@ -1,7 +1,4 @@
-from __future__ import annotations
-
 import asyncio
-import os
 from typing import Any
 
 from loguru import logger
@@ -11,70 +8,86 @@ from ...config import load_cgrignore_patterns
 from ...graph_updater import GraphUpdater
 from ...parser_loader import load_parsers
 from ...request_context import org_id_context
+from ...utils.org_tool_finding_store import get_branch_name_for_finding
 from .index_job_payload import IndexJobPayload
-
-
-def _resolve_repo_path(repo_path: str) -> str:
-    return os.path.abspath(repo_path)
+from .repo_manager import RepoManager
 
 
 async def process_index_job_message(
     *,
     payload: IndexJobPayload,
     ingestor: Any,
+    repo_manager: RepoManager,
     key: str | None,
 ) -> bool:
     """
     Returns True if the message offset may be committed (success or poison skip).
     Returns False to leave the offset uncommitted (retry after rebalance/restart).
     """
-    repo_path = _resolve_repo_path(payload.repo_path)
-    if not os.path.isdir(repo_path):
-        logger.warning("Index job repo_path not found; skipping: {}", repo_path)
-        return True
+    invocation = payload.invocation_id
+    target_repo_path = None
 
-    ctx_token = org_id_context.set(payload.org_id)
     try:
-        from pathlib import Path
-
-        repo = Path(repo_path).resolve()
-        cgrignore = load_cgrignore_patterns(repo)
-        cli_excludes = frozenset(payload.exclude or [])
-        exclude_paths = cli_excludes | cgrignore.exclude or None
-        unignore_paths = cgrignore.unignore or None
-
-        if payload.clean:
-            logger.info("Cleaning graph database and hash cache before index job...")
-            ingestor.clean_database()
-            cache_path = repo / cs.HASH_CACHE_FILENAME
-            cache_path.unlink(missing_ok=True)
-
-        ingestor.ensure_constraints()
-        parsers, queries = load_parsers()
-
-        updater = GraphUpdater(
-            ingestor=ingestor,
-            repo_path=repo,
-            parsers=parsers,
-            queries=queries,
-            unignore_paths=unignore_paths,
-            exclude_paths=exclude_paths,
-            project_name=repo.name,
-        )
-
-        # Run synchronous GraphUpdater in a thread to avoid blocking the event loop.
-        await asyncio.to_thread(updater.run)
-        logger.info(
-            "Index job completed org_id={} repo_path={} clean={} exclude={}",
+        # Determine branch name from the finding
+        branch_name = get_branch_name_for_finding(
+            payload.org_tool_finding_id,
             payload.org_id,
-            repo_path,
-            payload.clean,
-            payload.exclude,
         )
-        return True
-    except Exception:
-        logger.exception("Index job failed for {}", repo_path)
-        return False
-    finally:
-        org_id_context.reset(ctx_token)
+
+        # Ensuring repository exists in the deterministic process folder
+        target_repo_path = await repo_manager.ensure_cloned(
+            repo_url=payload.repo_url,
+            org_id=payload.org_id,
+            branch=branch_name,
+        )
+
+        ctx_token = org_id_context.set(payload.org_id)
+        try:
+            from pathlib import Path
+
+            repo = Path(target_repo_path).resolve()
+            cgrignore = load_cgrignore_patterns(repo)
+            cli_excludes = frozenset(payload.exclude or [])
+            exclude_paths = cli_excludes | cgrignore.exclude or None
+            unignore_paths = cgrignore.unignore or None
+
+            if payload.clean:
+                logger.info("Cleaning graph database and hash cache before index job...")
+                ingestor.clean_database()
+                cache_path = repo / cs.HASH_CACHE_FILENAME
+                cache_path.unlink(missing_ok=True)
+
+            ingestor.ensure_constraints()
+            parsers, queries = load_parsers()
+
+            updater = GraphUpdater(
+                ingestor=ingestor,
+                repo_path=repo,
+                parsers=parsers,
+                queries=queries,
+                unignore_paths=unignore_paths,
+                exclude_paths=exclude_paths,
+                project_name=repo.name,
+            )
+
+            # Run synchronous GraphUpdater in a thread to avoid blocking the event loop.
+            await asyncio.to_thread(updater.run)
+            logger.info(
+                "Index job completed org_id={} repo_url={} clean={} exclude={} invocation_id={}",
+                payload.org_id,
+                payload.repo_url,
+                payload.clean,
+                payload.exclude,
+                invocation,
+            )
+            return True
+        except Exception:
+            logger.exception("Index job failed for {} (invocation={})", payload.repo_url, invocation)
+            return False
+        finally:
+            org_id_context.reset(ctx_token)
+
+    except Exception as e:
+        logger.error("Failed to prepare repository for indexing: {}", e)
+        return True  # Skip poison pill
 

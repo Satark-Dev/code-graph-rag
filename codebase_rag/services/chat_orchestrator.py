@@ -15,6 +15,7 @@ from ..bootstrap import initialize_services_and_agent
 from ..chat_schemas import EvidenceToolOutput, RemediationToolOutput, ScoringToolOutput
 from ..config import settings
 from ..constants import HASH_CACHE_FILENAME
+from ..observability.hook import observability_hook
 from ..prompts import (
     API_EVIDENCE_PROMPT,
     API_REMEDIATION_PROMPT,
@@ -189,13 +190,25 @@ def _usage_from_result(result: Any) -> tuple[int | None, int | None, int | None]
         if isinstance(obj, dict):
             return obj.get("usage") if isinstance(obj.get("usage"), dict) else obj
 
+        # (H) pydantic-ai result objects have a usage() method.
+        if hasattr(obj, "usage") and callable(obj.usage):
+            try:
+                # Try calling it and converting to dict
+                usage_obj = obj.usage()
+                if hasattr(usage_obj, "model_dump"):
+                    return usage_obj.model_dump()
+                if isinstance(usage_obj, dict):
+                    return usage_obj
+            except Exception:
+                pass
+
         # Try finding usage attribute
         for attr in ("usage", "model_response", "response"):
             val = getattr(obj, attr, None)
             if val is not None:
                 if isinstance(val, dict):
                     return val
-                if hasattr(val, "usage"):
+                if hasattr(val, "usage") and not callable(val.usage):
                     return getattr(val, "usage")
                 if hasattr(val, "model_dump"):
                     try:
@@ -223,7 +236,7 @@ def _usage_from_result(result: Any) -> tuple[int | None, int | None, int | None]
 
     if tot_t is None and in_t is not None and out_t is not None:
         tot_t = in_t + out_t
-        
+
     return in_t, out_t, tot_t
 
 
@@ -495,10 +508,31 @@ class ChatOrchestratorService:
 
 
     @classmethod
+    async def _log_stage_prompts(
+        cls,
+        *,
+        agent: Any,
+        default_system_prompt: str,
+        user_payload: str,
+        tool_call_id: str,
+    ) -> None:
+        """Helper to log system and user prompts for a stage."""
+        system_prompt = getattr(agent, "system_prompt", default_system_prompt)
+        if not isinstance(system_prompt, str):
+            system_prompt = default_system_prompt
+
+        await observability_hook.log_message(
+            actor="system", content=system_prompt, tool_call_id=tool_call_id
+        )
+        await observability_hook.log_message(
+            actor="user", content=user_payload, tool_call_id=tool_call_id
+        )
+
     async def _run_evidence_stage(
         cls,
         *,
         run_id: str,
+        tool_call_id: str,
         query_payload: str,
         evidence_agent: Any,
         cache_key: str,
@@ -509,6 +543,14 @@ class ChatOrchestratorService:
         deferred_results = None
         evidence_usage_from_provider: tuple[int | None, int | None, int | None] = (None, None, None)
         evidence_in_tokens = count_tokens(API_EVIDENCE_PROMPT) + count_tokens(query_payload)
+
+        # (H) Log system and user prompts for evidence stage
+        await cls._log_stage_prompts(
+            agent=evidence_agent,
+            default_system_prompt=API_EVIDENCE_PROMPT,
+            user_payload=query_payload,
+            tool_call_id=tool_call_id,
+        )
 
         async def _run_once() -> dict[str, Any]:
             nonlocal deferred_results, message_history, evidence_usage_from_provider
@@ -534,6 +576,14 @@ class ChatOrchestratorService:
                     )
 
                 evidence_usage_from_provider = _usage_from_result(result)
+                await observability_hook.log_llm_usage(
+                    tool_name="evidence",
+                    tool_call_id=tool_call_id,
+                    model_name=settings.active_orchestrator_config.model_id,
+                    input_tokens=evidence_usage_from_provider[0] or 0,
+                    output_tokens=evidence_usage_from_provider[1] or 0,
+                    duration_ms=int((time.perf_counter() - t_stage) * 1000) if "t_stage" in locals() else None,
+                )
                 return _parse_and_validate_stage(
                     stage=PipelineStage.EVIDENCE,
                     raw_text=result.output,
@@ -587,12 +637,20 @@ class ChatOrchestratorService:
         cls,
         *,
         run_id: str,
+        tool_call_id: str,
         shared_payload: str,
         timeout: float,
     ) -> tuple[dict[str, Any], tuple[int | None, int | None, int | None]]:
         scoring_agent = create_rag_orchestrator(tools=[], system_prompt=API_SCORING_PROMPT)
 
         async def _run_once() -> dict[str, Any]:
+            # (H) Log system and user prompts for scoring stage
+            await cls._log_stage_prompts(
+                agent=scoring_agent,
+                default_system_prompt=API_SCORING_PROMPT,
+                user_payload=shared_payload,
+                tool_call_id=tool_call_id,
+            )
             result = await scoring_agent.run(shared_payload)
             if not isinstance(result.output, str):
                 raise ChatStageError(
@@ -600,6 +658,14 @@ class ChatOrchestratorService:
                     message=f"Unexpected scoring response format: {type(result.output)}",
                     run_id=run_id,
                 )
+            usage = _usage_from_result(result)
+            await observability_hook.log_llm_usage(
+                tool_name="scoring",
+                tool_call_id=tool_call_id,
+                model_name=settings.active_orchestrator_config.model_id,
+                input_tokens=usage[0] or 0,
+                output_tokens=usage[1] or 0,
+            )
             return result, _parse_and_validate_stage(
                 stage=PipelineStage.SCORING,
                 raw_text=result.output,
@@ -619,6 +685,7 @@ class ChatOrchestratorService:
         cls,
         *,
         run_id: str,
+        tool_call_id: str,
         shared_payload: str,
         timeout: float,
     ) -> tuple[dict[str, Any], tuple[int | None, int | None, int | None]]:
@@ -627,6 +694,13 @@ class ChatOrchestratorService:
         )
 
         async def _run_once() -> dict[str, Any]:
+            # (H) Log system and user prompts for remediation stage
+            await cls._log_stage_prompts(
+                agent=remediation_agent,
+                default_system_prompt=API_REMEDIATION_PROMPT,
+                user_payload=shared_payload,
+                tool_call_id=tool_call_id,
+            )
             result = await remediation_agent.run(shared_payload)
             if not isinstance(result.output, str):
                 raise ChatStageError(
@@ -634,6 +708,14 @@ class ChatOrchestratorService:
                     message=f"Unexpected remediation response format: {type(result.output)}",
                     run_id=run_id,
                 )
+            usage = _usage_from_result(result)
+            await observability_hook.log_llm_usage(
+                tool_name="remediation",
+                tool_call_id=tool_call_id,
+                model_name=settings.active_orchestrator_config.model_id,
+                input_tokens=usage[0] or 0,
+                output_tokens=usage[1] or 0,
+            )
             return result, _parse_and_validate_stage(
                 stage=PipelineStage.REMEDIATION,
                 raw_text=result.output,
@@ -698,12 +780,10 @@ class ChatOrchestratorService:
         }
 
     @classmethod
-    async def process_query(
-        cls, request_query: dict, ingestor: Any, target_repo_path: str
-    ) -> dict[str, Any]:
-        """
-        Executes the logic to extract an evidence pack, score it, and propose remediation.
-        """
+    def _prepare_context(
+        cls, request_query: dict, target_repo_path: str, ingestor: Any
+    ) -> tuple[str, str, str, str, Any]:
+        """Prepare execution context, identifiers, and legacy payload normalization."""
         cache_key = cls._get_cache_key(request_query, target_repo_path)
         repo_state_hash = _compute_repo_state_hash(target_repo_path)
         run_id = new_run_id()
@@ -718,25 +798,33 @@ class ChatOrchestratorService:
             findings_payload = {"findings": [request_query]}
 
         query_payload = json.dumps(findings_payload, ensure_ascii=False)
+        return run_id, cache_key, repo_state_hash, query_payload, evidence_agent
 
-        # 1. Evidence Stage
-        evidence_json, evidence_usage, evidence_ms = await cls._run_evidence_stage(
-            run_id=run_id,
-            query_payload=query_payload,
-            evidence_agent=evidence_agent,
-            cache_key=cache_key,
-            target_repo_path=target_repo_path,
-            repo_state_hash=repo_state_hash,
-        )
-
+    @classmethod
+    async def _run_parallel_stages(
+        cls,
+        *,
+        run_id: str,
+        scoring_tool_id: str,
+        remediation_tool_id: str,
+        evidence_json: dict[str, Any],
+        cache_key: str,
+        target_repo_path: str,
+        repo_state_hash: str,
+    ) -> dict[str, Any]:
+        """Execute scoring and remediation in parallel with retry logic."""
         evidence_items = evidence_json.get("items", [])
         shared_input = {"findings": evidence_items}
         shared_payload = json.dumps(shared_input, ensure_ascii=False)
 
-        # 2. Scoring & Remediation Stages (Parallel)
         scoring_timeout = float(settings.CHAT_SCORING_TIMEOUT_SECONDS)
         remediation_timeout = float(settings.CHAT_REMEDIATION_TIMEOUT_SECONDS)
         stage_attempts = max(1, int(settings.CHAT_SCHEMA_RETRY_ATTEMPTS))
+
+        async def _timed(stage: str, coro):
+            t_start = time.perf_counter()
+            res = await coro
+            return res, int((time.perf_counter() - t_start) * 1000)
 
         scoring_json = None
         remediation_json = None
@@ -744,11 +832,6 @@ class ChatOrchestratorService:
         remediation_ms = 0
         scoring_usage_provider = (None, None, None)
         remediation_usage_provider = (None, None, None)
-
-        async def _timed(stage: str, coro):
-            t_start = time.perf_counter()
-            res = await coro
-            return res, int((time.perf_counter() - t_start) * 1000)
 
         for attempt in range(stage_attempts):
             try:
@@ -759,26 +842,15 @@ class ChatOrchestratorService:
                     (remediation_json, remediation_usage_provider),
                     remediation_ms,
                 ) = await asyncio.gather(
-                    _timed("scoring", cls._run_scoring_stage(run_id=run_id, shared_payload=shared_payload, timeout=scoring_timeout)),
-                    _timed("remediation", cls._run_remediation_stage(run_id=run_id, shared_payload=shared_payload, timeout=remediation_timeout)),
+                    _timed("scoring", cls._run_scoring_stage(run_id=run_id, tool_call_id=scoring_tool_id, shared_payload=shared_payload, timeout=scoring_timeout)),
+                    _timed("remediation", cls._run_remediation_stage(run_id=run_id, tool_call_id=remediation_tool_id, shared_payload=shared_payload, timeout=remediation_timeout)),
                 )
                 break
             except ChatStageError:
                 if attempt >= stage_attempts - 1:
                     raise
 
-        # 3. Finalize
-        scoring_usage = _build_usage_dict(
-            scoring_usage_provider,
-            count_tokens(API_SCORING_PROMPT) + count_tokens(shared_payload),
-            count_tokens(json.dumps(scoring_json, ensure_ascii=False)),
-        )
-        remediation_usage = _build_usage_dict(
-            remediation_usage_provider,
-            count_tokens(API_REMEDIATION_PROMPT) + count_tokens(shared_payload),
-            count_tokens(json.dumps(remediation_json, ensure_ascii=False)),
-        )
-
+        # Persistence
         _persist_stage(
             run_id=run_id,
             cache_key=cache_key,
@@ -798,9 +870,47 @@ class ChatOrchestratorService:
             tool_output=remediation_json,
         )
 
+        return {
+            "scoring_json": scoring_json,
+            "scoring_ms": scoring_ms,
+            "scoring_usage_provider": scoring_usage_provider,
+            "remediation_json": remediation_json,
+            "remediation_ms": remediation_ms,
+            "remediation_usage_provider": remediation_usage_provider,
+            "shared_payload": shared_payload,
+        }
+
+    @classmethod
+    def _finalize_orchestration_response(
+        cls,
+        *,
+        run_id: str,
+        evidence_json: dict[str, Any],
+        evidence_ms: int,
+        evidence_usage: dict[str, Any],
+        scoring_json: dict[str, Any],
+        scoring_ms: int,
+        scoring_usage_provider: tuple[int | None, int | None, int | None],
+        remediation_json: dict[str, Any],
+        remediation_ms: int,
+        remediation_usage_provider: tuple[int | None, int | None, int | None],
+        shared_payload: str,
+    ) -> dict[str, Any]:
+        """Aggregate all stage data and compute final usage/response."""
+        scoring_usage = _build_usage_dict(
+            scoring_usage_provider,
+            count_tokens(API_SCORING_PROMPT) + count_tokens(shared_payload),
+            count_tokens(json.dumps(scoring_json, ensure_ascii=False)),
+        )
+        remediation_usage = _build_usage_dict(
+            remediation_usage_provider,
+            count_tokens(API_REMEDIATION_PROMPT) + count_tokens(shared_payload),
+            count_tokens(json.dumps(remediation_json, ensure_ascii=False)),
+        )
+
         return cls._build_final_response(
             run_id=run_id,
-            evidence_json={"items": evidence_items},
+            evidence_json=evidence_json,
             evidence_ms=evidence_ms,
             evidence_usage=evidence_usage,
             scoring_json=scoring_json,
@@ -810,3 +920,61 @@ class ChatOrchestratorService:
             remediation_ms=remediation_ms,
             remediation_usage=remediation_usage,
         )
+
+    @classmethod
+    async def process_query(
+        cls, request_query: dict, ingestor: Any, target_repo_path: str, org_id: str, invocation_id: str | None = None
+    ) -> dict[str, Any]:
+        """
+        Executes the logic to extract an evidence pack, score it, and propose remediation.
+        """
+        await observability_hook.before_chat(org_id=org_id, invocation_id=invocation_id)
+        try:
+            # 1. Setup Context & Evidence
+            run_id, cache_key, repo_state_hash, query_payload, evidence_agent = cls._prepare_context(
+                request_query, target_repo_path, ingestor
+            )
+
+            # (H) Generate separate tool call IDs for each stage
+            evidence_tool_id = f"{run_id}_evidence"
+            scoring_tool_id = f"{run_id}_scoring"
+            remediation_tool_id = f"{run_id}_remediation"
+
+            await observability_hook.log_message(actor="user", content=json.dumps(request_query), tool_call_id=run_id)
+
+            evidence_json, evidence_usage, evidence_ms = await cls._run_evidence_stage(
+                run_id=run_id,
+                tool_call_id=evidence_tool_id,
+                query_payload=query_payload,
+                evidence_agent=evidence_agent,
+                cache_key=cache_key,
+                target_repo_path=target_repo_path,
+                repo_state_hash=repo_state_hash,
+            )
+
+            # 2. Parallel Stages (Scoring & Remediation)
+            parallel_results = await cls._run_parallel_stages(
+                run_id=run_id,
+                scoring_tool_id=scoring_tool_id,
+                remediation_tool_id=remediation_tool_id,
+                evidence_json=evidence_json,
+                cache_key=cache_key,
+                target_repo_path=target_repo_path,
+                repo_state_hash=repo_state_hash,
+            )
+
+            # 3. Finalize
+            final_resp = cls._finalize_orchestration_response(
+                run_id=run_id,
+                evidence_json=evidence_json,
+                evidence_ms=evidence_ms,
+                evidence_usage=evidence_usage,
+                **parallel_results,
+            )
+
+            await observability_hook.log_message(actor="assistant", content=json.dumps(final_resp), tool_call_id=run_id)
+            await observability_hook.after_chat_success(tool_call_id=run_id)
+            return final_resp
+        except Exception as e:
+            await observability_hook.after_chat_error(e, tool_call_id=run_id)
+            raise

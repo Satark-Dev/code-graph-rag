@@ -189,11 +189,6 @@ class AppConfig(BaseSettings):
     OLLAMA_BASE_URL: str
     BACKEND_API_BASE_URL: str
 
-    @property
-    def ollama_endpoint(self) -> str:
-        return f"{self.OLLAMA_BASE_URL.rstrip('/')}/v1"
-
-    TARGET_REPO_PATH: str
     SHELL_COMMAND_TIMEOUT: int
     SHELL_COMMAND_REPEAT_LIMIT: int = Field(..., gt=0)
     SHELL_COMMAND_REPEAT_WINDOW_SECONDS: int = Field(..., gt=0)
@@ -280,6 +275,10 @@ class AppConfig(BaseSettings):
 
     STRICT_ENV: bool = Field(True, validation_alias="CGR_STRICT_ENV")
 
+    @property
+    def ollama_endpoint(self) -> str:
+        return f"{self.OLLAMA_BASE_URL.rstrip('/')}/v1"
+
     # --- Kafka (chat job consumer) ---
     KAFKA_BOOTSTRAP_SERVERS: str = ""
     KAFKA_CHAT_JOBS_TOPIC: str = "cgr.chat.jobs"
@@ -295,6 +294,7 @@ class AppConfig(BaseSettings):
     KAFKA_CHAT_TOPIC_REPLICATION_FACTOR: int = Field(1, ge=1)
 
     # --- Kafka (index job consumer) ---
+    KAFKA_OBSERVABILITY_TOPIC: str = "queue.ai.invocation.logs"
     KAFKA_INDEX_JOBS_TOPIC: str = "cgr.index.jobs"
     KAFKA_INDEX_CONSUMER_GROUP_ID: str = "cgr-index-jobs"
     KAFKA_INDEX_MAX_CONCURRENCY: int = Field(2, ge=1)
@@ -306,6 +306,7 @@ class AppConfig(BaseSettings):
     KAFKA_INDEX_RECONNECT_BACKOFF_INITIAL: float = Field(1.0, gt=0)
     KAFKA_INDEX_TOPIC_NUM_PARTITIONS: int = Field(1, ge=1)
     KAFKA_INDEX_TOPIC_REPLICATION_FACTOR: int = Field(1, ge=1)
+    KAFKA_REPO_ROOT: str = Field("/tmp/cgr_repos", validation_alias="CGR_KAFKA_REPO_ROOT")
 
     @field_validator("KAFKA_CHAT_AUTO_OFFSET_RESET", mode="after")
     @classmethod
@@ -419,7 +420,6 @@ class AppConfig(BaseSettings):
         "CYPHER_REGION",
         "OLLAMA_BASE_URL",
         "BACKEND_API_BASE_URL",
-        "TARGET_REPO_PATH",
         "PGVECTOR_TABLE_NAME",
         "MCP_HTTP_HOST",
         "MCP_HTTP_ENDPOINT_PATH",

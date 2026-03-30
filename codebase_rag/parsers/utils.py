@@ -15,7 +15,6 @@ from ..types_defs import (
     LanguageQueries,
     NodeType,
     PropertyDict,
-    SimpleNameLookup,
     TreeSitterNodeProtocol,
 )
 
@@ -88,7 +87,6 @@ def ingest_method(
     container_type: cs.NodeLabel,
     ingestor: IngestorProtocol,
     function_registry: FunctionRegistryTrieProtocol,
-    simple_name_lookup: SimpleNameLookup,
     get_docstring_func: Callable[[ASTNode], str | None],
     language: cs.SupportedLanguage | None = None,
     extract_decorators_func: Callable[[ASTNode], list[str]] | None = None,
@@ -128,7 +126,6 @@ def ingest_method(
     logger.info(logs.METHOD_FOUND.format(name=method_name, qn=method_qn))
     ingestor.ensure_node_batch(cs.NodeLabel.METHOD, method_props)
     function_registry[method_qn] = NodeType.METHOD
-    simple_name_lookup[method_name].add(method_qn)
 
     ingestor.ensure_relationship_batch(
         (container_type, cs.KEY_QUALIFIED_NAME, container_qn),
@@ -144,7 +141,6 @@ def ingest_exported_function(
     export_type: str,
     ingestor: IngestorProtocol,
     function_registry: FunctionRegistryTrieProtocol,
-    simple_name_lookup: SimpleNameLookup,
     get_docstring_func: Callable[[ASTNode], str | None],
     is_export_inside_function_func: Callable[[ASTNode], bool],
 ) -> None:
@@ -168,7 +164,6 @@ def ingest_exported_function(
     )
     ingestor.ensure_node_batch(cs.NodeLabel.FUNCTION, function_props)
     function_registry[function_qn] = NodeType.FUNCTION
-    simple_name_lookup[function_name].add(function_qn)
 
 
 def is_method_node(func_node: ASTNode, lang_config: LanguageSpec) -> bool:

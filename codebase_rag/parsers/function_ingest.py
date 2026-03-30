@@ -199,7 +199,6 @@ class FunctionIngestMixin:
                 container_type=cs.NodeLabel.CLASS,
                 ingestor=self.ingestor,
                 function_registry=self.function_registry,
-                simple_name_lookup=self.simple_name_lookup,
                 get_docstring_func=self._get_docstring,
                 language=cs.SupportedLanguage.CPP,
                 extract_decorators_func=self._extract_decorators,
@@ -257,7 +256,6 @@ class FunctionIngestMixin:
             logger.info(ls.METHOD_FOUND.format(name=entry.method_name, qn=method_qn))
             self.ingestor.ensure_node_batch(cs.NodeLabel.METHOD, props)
             self.function_registry[method_qn] = NodeType.METHOD
-            self.simple_name_lookup[entry.method_name].add(method_qn)
 
             self.ingestor.ensure_relationship_batch(
                 (cs.NodeLabel.CLASS, cs.KEY_QUALIFIED_NAME, class_qn),
@@ -300,7 +298,7 @@ class FunctionIngestMixin:
             func_name = self._extract_lua_assignment_function_name(func_node)
 
         if not func_name:
-            func_name = self._generate_anonymous_function_name(func_node, module_qn)
+            func_name = self._generate_anonymous_function_name(func_node)
 
         func_qn = self._build_function_qn(
             func_node, module_qn, func_name, language, lang_config
@@ -409,7 +407,7 @@ class FunctionIngestMixin:
 
         return None
 
-    def _generate_anonymous_function_name(self, func_node: Node, module_qn: str) -> str:
+    def _generate_anonymous_function_name(self, func_node: Node) -> str:
         parent = func_node.parent
         if parent and parent.type == cs.TS_PARENTHESIZED_EXPRESSION:
             grandparent = parent.parent

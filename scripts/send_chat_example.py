@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 
 from loguru import logger
 
@@ -11,15 +12,15 @@ from codebase_rag.services.kafka.chat_job_payload import ChatJobPayloadV1
 async def send_chat_example() -> None:
     """Send a single example chat job to Kafka for end-to-end testing."""
     org_id = "3b393436-119f-45ca-8d53-842d7ec96771"
-    repo_path = "/Users/infynnosolutions/Desktop/Code/JavaGoat"
     findings = [
-        "00ffe5f0-8e13-4b39-b29b-512dd40baba0"
+        "4395a501-c99c-43ac-b86c-0354eb36c6fd"
     ]
+    invocation_id = str(uuid.uuid4())
 
     payload = ChatJobPayloadV1(
         org_id=org_id,
-        repo_path=repo_path,
         org_tool_findings_ids=findings,
+        invocation_id=invocation_id,
     )
 
     topic = get_chat_jobs_topic()
@@ -45,4 +46,3 @@ async def send_chat_example() -> None:
 
 if __name__ == "__main__":
     asyncio.run(send_chat_example())
-

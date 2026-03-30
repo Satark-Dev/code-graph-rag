@@ -68,7 +68,7 @@ async def _commit_offset(
 async def _process_one_raw(
     consumer: AIOKafkaConsumer,
     msg: Any,
-    ingestor: Any,
+    context: dict[str, Any],
 ) -> None:
     tp = TopicPartition(msg.topic, msg.partition)
     key_s = msg.key.decode("utf-8") if msg.key else None
@@ -108,7 +108,10 @@ async def _process_one_raw(
         return
 
     ok = await process_chat_job_message(
-        payload=payload, ingestor=ingestor, key=key_s
+        payload=payload,
+        ingestor=context["ingestor"],
+        repo_manager=context["repo_manager"],
+        key=key_s,
     )
     if ok:
         await _commit_offset(consumer, tp, msg.offset)
@@ -116,7 +119,7 @@ async def _process_one_raw(
 
 async def run_chat_job_consumer_loop(
     *,
-    ingestor: Any,
+    context: dict[str, Any],
     stop_event: asyncio.Event,
 ) -> None:
     """
@@ -144,7 +147,7 @@ async def run_chat_job_consumer_loop(
         build_consumer=build_chat_job_consumer,
         ensure_topic=_ensure_topic,
         process_message=_process_one_raw,
-        ingestor=ingestor,
+        ingestor=context,
         stop_event=stop_event,
         cfg=cfg,
     )

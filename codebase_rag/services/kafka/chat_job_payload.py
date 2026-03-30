@@ -18,15 +18,13 @@ from pydantic import (
 class ChatJobPayloadV1(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    schema_version: int = Field(default=1, ge=1)
     org_id: str
     org_tool_findings_ids: list[str]
-    repo_path: str | None = None
     orchestrator: str | None = None
     cypher: str | None = None
-    invocation_id: str | None = Field(
-        default=None,
-        description="Correlation id for logs (optional).",
+    invocation_id: str = Field(
+        ...,
+        description="Correlation id for logs.",
     )
 
     @field_validator("org_id")
@@ -55,8 +53,6 @@ class ChatJobPayloadV1(BaseModel):
             out["org_id"] = out.pop("orgId")
         if "orgToolFindingsIds" in out and "org_tool_findings_ids" not in out:
             out["org_tool_findings_ids"] = out.pop("orgToolFindingsIds")
-        if "repoPath" in out and "repo_path" not in out:
-            out["repo_path"] = out.pop("repoPath")
         if "invocationId" in out and "invocation_id" not in out:
             out["invocation_id"] = out.pop("invocationId")
         if "schemaVersion" in out and "schema_version" not in out:

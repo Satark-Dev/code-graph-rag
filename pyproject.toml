@@ -37,7 +37,7 @@ keywords = [
 dependencies = [
     "loguru>=0.7.3",
     "mcp>=1.21.1",
-    "pydantic-ai-slim[google,openai,vertexai]>=1.18.0",
+    "pydantic-ai-slim[anthropic,google,openai,vertexai]>=1.18.0",
     "pydantic-settings>=2.0.0",
     "fastapi>=0.111.0",
     "uvicorn>=0.30.0",
@@ -57,6 +57,7 @@ dependencies = [
     "defusedxml>=0.7.1",
     "huggingface-hub[hf-xet]>=1.7.2",
     "aiokafka>=0.11.0",
+    "kafka-python-ng>=2.2.3",
 ]
 
 [project.scripts]

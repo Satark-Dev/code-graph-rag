@@ -172,7 +172,7 @@ def start(
 ) -> None:
     app_context.session.confirm_edits = not no_confirm
 
-    target_repo_path = repo_path or settings.TARGET_REPO_PATH
+    target_repo_path = repo_path or "."
 
     if output and not update_graph:
         app_context.console.print(
@@ -279,7 +279,7 @@ def index(
         help=ch.HELP_INTERACTIVE_SETUP,
     ),
 ) -> None:
-    target_repo_path = repo_path or settings.TARGET_REPO_PATH
+    target_repo_path = repo_path or "."
     repo_to_index = Path(target_repo_path)
     _info(style(cs.CLI_MSG_INDEXING_AT.format(path=repo_to_index), cs.Color.GREEN))
 
@@ -394,7 +394,7 @@ def optimize(
 ) -> None:
     app_context.session.confirm_edits = not no_confirm
 
-    target_repo_path = repo_path or settings.TARGET_REPO_PATH
+    target_repo_path = repo_path or "."
 
     _update_and_validate_models(orchestrator, cypher)
 

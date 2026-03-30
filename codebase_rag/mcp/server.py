@@ -28,9 +28,7 @@ def setup_logging() -> None:
 
 
 def get_project_root() -> Path:
-    repo_path: str | None = (
-        os.environ.get(cs.MCPEnvVar.TARGET_REPO_PATH) or settings.TARGET_REPO_PATH
-    )
+    repo_path: str | None = os.environ.get(cs.MCPEnvVar.TARGET_REPO_PATH)
 
     if not repo_path:
         repo_path = os.environ.get(cs.MCPEnvVar.CLAUDE_PROJECT_ROOT) or os.environ.get(
