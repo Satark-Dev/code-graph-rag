@@ -1,22 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
-import random
 from typing import Any
 
 from aiokafka import AIOKafkaConsumer
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
-from aiokafka.errors import KafkaError, TopicAlreadyExistsError, UnknownTopicOrPartitionError
+from aiokafka.errors import TopicAlreadyExistsError
 from aiokafka.structs import OffsetAndMetadata, TopicPartition
 from loguru import logger
 
 from ...config import settings
+from ._base_consumer_loop import ConsumerLoopConfig, run_consumer_loop
 from ._index_job_consumer_worker import process_index_job_message
 from .index_job_payload import IndexJobPayload
-
-_POISON = object()
 
 
 def build_index_job_consumer() -> AIOKafkaConsumer:
@@ -131,98 +128,24 @@ async def run_index_job_consumer_loop(
     - Per-partition FIFO with cross-partition parallelism capped by
       KAFKA_INDEX_MAX_CONCURRENCY.
     """
-    backoff = settings.KAFKA_INDEX_RECONNECT_BACKOFF_INITIAL
-    max_backoff = settings.KAFKA_INDEX_RECONNECT_MAX_SECONDS
+    cfg = ConsumerLoopConfig(
+        reconnect_backoff_initial=settings.KAFKA_INDEX_RECONNECT_BACKOFF_INITIAL,
+        reconnect_max_seconds=settings.KAFKA_INDEX_RECONNECT_MAX_SECONDS,
+        fetch_max_wait_ms=settings.KAFKA_INDEX_FETCH_MAX_WAIT_MS,
+        max_concurrency=settings.KAFKA_INDEX_MAX_CONCURRENCY,
+        missing_topic_log_msg=(
+            f"Kafka index topic missing: {settings.KAFKA_INDEX_JOBS_TOPIC}; attempting auto-create"
+        ),
+        start_failed_log_msg="Kafka index consumer start failed: {}",
+        read_error_log_msg="Kafka index read error: {}",
+        reconnect_log_msg="Kafka index consumer reconnecting after reader exit",
+    )
 
-    while not stop_event.is_set():
-        consumer = build_index_job_consumer()
-        try:
-            await consumer.start()
-        except UnknownTopicOrPartitionError:
-            logger.warning(
-                "Kafka index topic missing: {}; attempting auto-create",
-                settings.KAFKA_INDEX_JOBS_TOPIC,
-            )
-            with contextlib.suppress(Exception):
-                await consumer.stop()
-            await _ensure_index_topic()
-            if stop_event.is_set():
-                return
-            await asyncio.sleep(min(backoff, max_backoff))
-            backoff = min(backoff * 2, max_backoff)
-            continue
-        except KafkaError as e:
-            logger.warning("Kafka index consumer start failed: {}", e)
-            with contextlib.suppress(Exception):
-                await consumer.stop()
-            if stop_event.is_set():
-                return
-            await asyncio.sleep(min(backoff, max_backoff) + random.uniform(0, 0.25))
-            backoff = min(backoff * 2, max_backoff)
-            continue
-
-        backoff = settings.KAFKA_INDEX_RECONNECT_BACKOFF_INITIAL
-        queues: dict[TopicPartition, asyncio.Queue[Any]] = {}
-        workers: dict[TopicPartition, asyncio.Task[None]] = {}
-        sem = asyncio.Semaphore(settings.KAFKA_INDEX_MAX_CONCURRENCY)
-
-        async def _partition_worker(tp: TopicPartition, q: asyncio.Queue[Any]) -> None:
-            while True:
-                item = await q.get()
-                if item is _POISON:
-                    break
-                try:
-                    async with sem:
-                        await _process_one_raw(consumer, item, ingestor=ingestor)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.exception(
-                        "Kafka index partition worker error topic={} partition={}",
-                        tp.topic,
-                        tp.partition,
-                    )
-
-        def _ensure_queue(tp: TopicPartition) -> asyncio.Queue[Any]:
-            if tp not in queues:
-                q: asyncio.Queue[Any] = asyncio.Queue()
-                queues[tp] = q
-                workers[tp] = asyncio.create_task(_partition_worker(tp, q))
-            return queues[tp]
-
-        async def _reader() -> None:
-            poll = max(settings.KAFKA_INDEX_FETCH_MAX_WAIT_MS / 1000.0, 0.05)
-            while not stop_event.is_set():
-                try:
-                    msg = await asyncio.wait_for(consumer.getone(), timeout=poll)
-                except TimeoutError:
-                    continue
-                except asyncio.CancelledError:
-                    raise
-                except KafkaError as e:
-                    logger.warning("Kafka index read error: {}", e)
-                    return
-                if msg is None:
-                    continue
-                tp = TopicPartition(msg.topic, msg.partition)
-                await _ensure_queue(tp).put(msg)
-
-        read_task = asyncio.create_task(_reader())
-        try:
-            await read_task
-        finally:
-            read_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await read_task
-            for q in queues.values():
-                await q.put(_POISON)
-            await asyncio.gather(*workers.values(), return_exceptions=True)
-            with contextlib.suppress(Exception):
-                await consumer.stop()
-
-        if stop_event.is_set():
-            return
-
-        logger.info("Kafka index consumer reconnecting after reader exit")
-        await asyncio.sleep(min(backoff, max_backoff))
-
+    await run_consumer_loop(
+        build_consumer=build_index_job_consumer,
+        ensure_topic=_ensure_index_topic,
+        process_message=_process_one_raw,
+        ingestor=ingestor,
+        stop_event=stop_event,
+        cfg=cfg,
+    )

@@ -2,8 +2,9 @@ import asyncio
 import hashlib
 import json
 import time
+from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Type
 
 from loguru import logger
 from pydantic_ai import DeferredToolRequests, DeferredToolResults
@@ -68,6 +69,19 @@ class ChatStageError(Exception):
         self.run_id = run_id
 
 
+class PipelineStage(str, Enum):
+    EVIDENCE = "evidence"
+    SCORING = "scoring"
+    REMEDIATION = "remediation"
+
+
+_STAGE_VALIDATORS: dict[PipelineStage, Callable[[dict[str, Any]], None]] = {
+    PipelineStage.EVIDENCE: EvidenceToolOutput.model_validate,
+    PipelineStage.SCORING: ScoringToolOutput.model_validate,
+    PipelineStage.REMEDIATION: RemediationToolOutput.model_validate,
+}
+
+
 async def _run_with_timeout(coro, *, timeout_s: float, stage: str, run_id: str):
     try:
         return await asyncio.wait_for(coro, timeout=timeout_s)
@@ -80,7 +94,7 @@ async def _run_with_timeout(coro, *, timeout_s: float, stage: str, run_id: str):
 
 
 def _parse_and_validate_stage(
-    *, stage: str, raw_text: str, run_id: str
+    *, stage: PipelineStage, raw_text: str, run_id: str
 ) -> dict[str, Any]:
     try:
         parsed = json.loads(raw_text)
@@ -92,14 +106,10 @@ def _parse_and_validate_stage(
         ) from e
 
     try:
-        if stage == "evidence":
-            EvidenceToolOutput.model_validate(parsed)
-        elif stage == "scoring":
-            ScoringToolOutput.model_validate(parsed)
-        elif stage == "remediation":
-            RemediationToolOutput.model_validate(parsed)
-        else:
+        validator = _STAGE_VALIDATORS.get(stage)
+        if validator is None:
             raise ValueError(f"Unknown stage: {stage}")
+        validator(parsed)
     except ValidationError as e:
         raise ChatStageError(
             code="LLM_SCHEMA_MISMATCH",
@@ -157,6 +167,24 @@ def _usage_from_result(result: Any) -> tuple[int | None, int | None, int | None]
             return in_t, out_t, tot_t
 
     return None, None, None
+
+
+def _build_usage_dict(
+    provider_usage: tuple[int | None, int | None, int | None],
+    estimated_in: int,
+    estimated_out: int,
+) -> dict[str, int]:
+    in_u, out_u, tot_u = provider_usage
+    input_tokens = in_u if in_u is not None else estimated_in
+    output_tokens = out_u if out_u is not None else estimated_out
+    total_tokens = (
+        tot_u if tot_u is not None else input_tokens + output_tokens
+    )
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+    }
 
 
 class ChatOrchestratorService:
@@ -238,7 +266,9 @@ class ChatOrchestratorService:
 
                 evidence_usage_from_provider = _usage_from_result(result)
                 return _parse_and_validate_stage(
-                    stage="evidence", raw_text=result.output, run_id=run_id
+                    stage=PipelineStage.EVIDENCE,
+                    raw_text=result.output,
+                    run_id=run_id,
                 )
 
         evidence_timeout = float(settings.CHAT_EVIDENCE_TIMEOUT_SECONDS)
@@ -266,15 +296,11 @@ class ChatOrchestratorService:
         assert evidence_json is not None
         evidence_items = evidence_json.get("findings", [])
         evidence_out_tokens = count_tokens(json.dumps(evidence_json, ensure_ascii=False))
-        ev_in_u, ev_out_u, ev_tot_u = evidence_usage_from_provider
-        evidence_usage = {
-            "input_tokens": ev_in_u if ev_in_u is not None else evidence_in_tokens,
-            "output_tokens": ev_out_u if ev_out_u is not None else evidence_out_tokens,
-            "total_tokens": ev_tot_u
-            if ev_tot_u is not None
-            else (ev_in_u if ev_in_u is not None else evidence_in_tokens)
-            + (ev_out_u if ev_out_u is not None else evidence_out_tokens),
-        }
+        evidence_usage = _build_usage_dict(
+            evidence_usage_from_provider,
+            evidence_in_tokens,
+            evidence_out_tokens,
+        )
         evidence_input = {"findings": findings_payload.get("findings", [])}
         evidence_output = {"findings": evidence_items}
         _persist_stage(
@@ -318,7 +344,9 @@ class ChatOrchestratorService:
                 )
             scoring_usage_from_provider = _usage_from_result(result)
             return _parse_and_validate_stage(
-                stage="scoring", raw_text=result.output, run_id=run_id
+                stage=PipelineStage.SCORING,
+                raw_text=result.output,
+                run_id=run_id,
             )
 
         async def _run_remediation_once() -> dict[str, Any]:
@@ -332,7 +360,9 @@ class ChatOrchestratorService:
                 )
             remediation_usage_from_provider = _usage_from_result(result)
             return _parse_and_validate_stage(
-                stage="remediation", raw_text=result.output, run_id=run_id
+                stage=PipelineStage.REMEDIATION,
+                raw_text=result.output,
+                run_id=run_id,
             )
 
         scoring_timeout = float(settings.CHAT_SCORING_TIMEOUT_SECONDS)
@@ -381,25 +411,16 @@ class ChatOrchestratorService:
         scoring_out_tokens = count_tokens(json.dumps(scoring_json, ensure_ascii=False))
         remediation_out_tokens = count_tokens(json.dumps(remediation_json, ensure_ascii=False))
 
-        sc_in_u, sc_out_u, sc_tot_u = scoring_usage_from_provider
-        re_in_u, re_out_u, re_tot_u = remediation_usage_from_provider
-
-        scoring_usage = {
-            "input_tokens": sc_in_u if sc_in_u is not None else scoring_in_tokens,
-            "output_tokens": sc_out_u if sc_out_u is not None else scoring_out_tokens,
-            "total_tokens": sc_tot_u
-            if sc_tot_u is not None
-            else (sc_in_u if sc_in_u is not None else scoring_in_tokens)
-            + (sc_out_u if sc_out_u is not None else scoring_out_tokens),
-        }
-        remediation_usage = {
-            "input_tokens": re_in_u if re_in_u is not None else remediation_in_tokens,
-            "output_tokens": re_out_u if re_out_u is not None else remediation_out_tokens,
-            "total_tokens": re_tot_u
-            if re_tot_u is not None
-            else (re_in_u if re_in_u is not None else remediation_in_tokens)
-            + (re_out_u if re_out_u is not None else remediation_out_tokens),
-        }
+        scoring_usage = _build_usage_dict(
+            scoring_usage_from_provider,
+            scoring_in_tokens,
+            scoring_out_tokens,
+        )
+        remediation_usage = _build_usage_dict(
+            remediation_usage_from_provider,
+            remediation_in_tokens,
+            remediation_out_tokens,
+        )
 
         _persist_stage(
             run_id=run_id,
