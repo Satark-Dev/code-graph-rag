@@ -68,7 +68,6 @@ async def _commit_offset(
 async def _process_one_raw(
     consumer: AIOKafkaConsumer,
     msg: Any,
-    *,
     ingestor: Any,
 ) -> None:
     tp = TopicPartition(msg.topic, msg.partition)

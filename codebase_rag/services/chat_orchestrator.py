@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from ..constants import HASH_CACHE_FILENAME
 from ..config import settings
-from ..main import _initialize_services_and_agent
+from ..bootstrap import initialize_services_and_agent
 from ..prompts import (
     API_EVIDENCE_PROMPT,
     API_REMEDIATION_PROMPT,
@@ -219,7 +219,7 @@ class ChatOrchestratorService:
         run_id = new_run_id()
         t0 = time.perf_counter()
 
-        evidence_agent, _ = _initialize_services_and_agent(
+        evidence_agent, _ = initialize_services_and_agent(
             target_repo_path, ingestor, system_prompt=API_EVIDENCE_PROMPT
         )
 

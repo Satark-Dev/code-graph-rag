@@ -657,49 +657,6 @@ def update_model_settings(
         _update_single_model_setting(cs.ModelRole.CYPHER, cypher)
 
 
-def _write_graph_json(ingestor: MemgraphIngestor, output_path: Path) -> GraphData:
-    graph_data: GraphData = ingestor.export_graph_to_dict()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(output_path, "w", encoding=cs.ENCODING_UTF8) as f:
-        json.dump(graph_data, f, indent=cs.JSON_INDENT, ensure_ascii=False)
-
-    return graph_data
-
-
-def connect_memgraph(batch_size: int) -> MemgraphIngestor:
-    return MemgraphIngestor(
-        host=settings.MEMGRAPH_HOST,
-        port=settings.MEMGRAPH_PORT,
-        batch_size=batch_size,
-        username=settings.MEMGRAPH_USERNAME,
-        password=settings.MEMGRAPH_PASSWORD,
-    )
-
-
-def export_graph_to_file(ingestor: MemgraphIngestor, output: str) -> bool:
-    output_path = Path(output)
-
-    try:
-        graph_data = _write_graph_json(ingestor, output_path)
-        metadata = graph_data[cs.KEY_METADATA]
-        app_context.console.print(
-            cs.UI_GRAPH_EXPORT_SUCCESS.format(path=output_path.absolute())
-        )
-        app_context.console.print(
-            cs.UI_GRAPH_EXPORT_STATS.format(
-                nodes=metadata[cs.KEY_TOTAL_NODES],
-                relationships=metadata[cs.KEY_TOTAL_RELATIONSHIPS],
-            )
-        )
-        return True
-
-    except Exception as e:
-        app_context.console.print(cs.UI_ERR_EXPORT_FAILED.format(error=e))
-        logger.exception(ls.EXPORT_ERROR.format(error=e))
-        return False
-
-
 def detect_excludable_directories(repo_path: Path) -> set[str]:
     detected: set[str] = set()
     queue: deque[tuple[Path, int]] = deque([(repo_path, 0)])
