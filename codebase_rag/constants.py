@@ -20,6 +20,7 @@ class Provider(StrEnum):
     OPENAI = "openai"
     GOOGLE = "google"
     AZURE = "azure"
+    LITELLM_PROXY = "litellm_proxy"
 
 
 class Color(StrEnum):
@@ -1929,6 +1930,20 @@ CPP_STDLIB_ENTITIES = frozenset(
         "transform",
         "accumulate",
     }
+)
+
+# (H) Java stdlib package prefixes for static stdlib detection
+JAVA_STDLIB_PREFIXES = (
+    "java.",
+    "javax.",
+    "jdk.",
+    "com.sun.",
+    "sun.",
+    "org.w3c.",
+    "org.xml.",
+    "org.ietf.",
+    "org.omg.",
+    "netscape.",
 )
 
 # (H) Java common class names for heuristic detection
