@@ -1,0 +1,51 @@
+from __future__ import annotations
+
+from fastapi import FastAPI
+from loguru import logger
+
+from ...config import settings
+from .index_job_consumer_controller import ensure_index_job_consumer_started
+from .index_job_payload import IndexJobPayload
+from .producer import kafka_service
+
+
+def get_index_jobs_topic() -> str:
+    return settings.KAFKA_INDEX_JOBS_TOPIC
+
+
+def get_index_job_key(org_id: str, repo_path: str) -> str:
+    """Stable partition key so one org+repo serializes on a single partition."""
+    return f"{org_id.strip()}::{repo_path.strip()}"
+
+
+async def enqueue_index_job(
+    *,
+    app: FastAPI,
+    org_id: str,
+    repo_path: str,
+    clean: bool,
+    exclude: list[str] | None,
+) -> None:
+    """Produce one index job; returns immediately (work done by Kafka consumer)."""
+    payload = IndexJobPayload(
+        org_id=org_id,
+        repo_path=repo_path,
+        clean=clean,
+        exclude=exclude,
+    )
+    topic = get_index_jobs_topic()
+    key = get_index_job_key(org_id, repo_path)
+
+    await kafka_service.start()
+    await kafka_service.send(topic, value=payload.model_dump(mode="json"), key=key)
+
+    await ensure_index_job_consumer_started(app)
+
+    logger.info(
+        "Enqueued index job topic={} org_id={} repo_path={} clean={}",
+        topic,
+        org_id,
+        repo_path,
+        clean,
+    )
+

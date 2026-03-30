@@ -280,6 +280,59 @@ class AppConfig(BaseSettings):
 
     STRICT_ENV: bool = Field(True, validation_alias="CGR_STRICT_ENV")
 
+    # --- Kafka (chat job consumer) ---
+    KAFKA_BOOTSTRAP_SERVERS: str = ""
+    KAFKA_CHAT_JOBS_TOPIC: str = "cgr.chat.jobs"
+    KAFKA_CHAT_CONSUMER_GROUP_ID: str = "cgr-chat-jobs"
+    KAFKA_CHAT_MAX_CONCURRENCY: int = Field(4, ge=1)
+    KAFKA_CHAT_AUTO_OFFSET_RESET: str = "latest"
+    KAFKA_CHAT_SHUTDOWN_GRACE_SECONDS: float = Field(30.0, gt=0)
+    KAFKA_CHAT_FETCH_MAX_WAIT_MS: int = Field(500, ge=1)
+    KAFKA_CHAT_SESSION_TIMEOUT_MS: int = Field(30_000, ge=1)
+    KAFKA_CHAT_RECONNECT_MAX_SECONDS: float = Field(60.0, gt=0)
+    KAFKA_CHAT_RECONNECT_BACKOFF_INITIAL: float = Field(1.0, gt=0)
+    KAFKA_CHAT_TOPIC_NUM_PARTITIONS: int = Field(3, ge=1)
+    KAFKA_CHAT_TOPIC_REPLICATION_FACTOR: int = Field(1, ge=1)
+
+    # --- Kafka (index job consumer) ---
+    KAFKA_INDEX_JOBS_TOPIC: str = "cgr.index.jobs"
+    KAFKA_INDEX_CONSUMER_GROUP_ID: str = "cgr-index-jobs"
+    KAFKA_INDEX_MAX_CONCURRENCY: int = Field(2, ge=1)
+    KAFKA_INDEX_AUTO_OFFSET_RESET: str = "latest"
+    KAFKA_INDEX_SHUTDOWN_GRACE_SECONDS: float = Field(30.0, gt=0)
+    KAFKA_INDEX_FETCH_MAX_WAIT_MS: int = Field(500, ge=1)
+    KAFKA_INDEX_SESSION_TIMEOUT_MS: int = Field(30_000, ge=1)
+    KAFKA_INDEX_RECONNECT_MAX_SECONDS: float = Field(60.0, gt=0)
+    KAFKA_INDEX_RECONNECT_BACKOFF_INITIAL: float = Field(1.0, gt=0)
+    KAFKA_INDEX_TOPIC_NUM_PARTITIONS: int = Field(1, ge=1)
+    KAFKA_INDEX_TOPIC_REPLICATION_FACTOR: int = Field(1, ge=1)
+
+    @field_validator("KAFKA_CHAT_AUTO_OFFSET_RESET", mode="after")
+    @classmethod
+    def _kafka_auto_offset_reset(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in ("latest", "earliest"):
+            raise ValueError(
+                "KAFKA_CHAT_AUTO_OFFSET_RESET must be 'latest' or 'earliest'"
+            )
+        return normalized
+
+    @field_validator("KAFKA_INDEX_AUTO_OFFSET_RESET", mode="after")
+    @classmethod
+    def _kafka_index_auto_offset_reset(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in ("latest", "earliest"):
+            raise ValueError(
+                "KAFKA_INDEX_AUTO_OFFSET_RESET must be 'latest' or 'earliest'"
+            )
+        return normalized
+
+    def kafka_bootstrap_servers_list(self) -> list[str]:
+        raw = self.KAFKA_BOOTSTRAP_SERVERS.strip()
+        if not raw:
+            return []
+        return [h.strip() for h in raw.split(",") if h.strip()]
+
     @field_validator(
         "MEMGRAPH_USERNAME",
         "MEMGRAPH_PASSWORD",
@@ -519,6 +572,12 @@ def _assert_env_matches_example(*, strict: bool) -> None:
 _assert_required_env_vars()
 settings = AppConfig()
 _assert_env_matches_example(strict=bool(settings.STRICT_ENV))
+
+
+def kafka_consumer_reload_guard_allows_start() -> bool:
+    """Avoid double consumer with some dev reload parents (repomind / Werkzeug pattern)."""
+    run_main = os.environ.get("RUN_MAIN") or os.environ.get("WERKZEUG_RUN_MAIN")
+    return run_main is None or str(run_main).lower() == "true"
 
 CGRIGNORE_FILENAME = ".cgrignore"
 
