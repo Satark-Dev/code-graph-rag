@@ -3,14 +3,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import random
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from aiokafka import AIOKafkaConsumer
 from aiokafka.errors import KafkaError, UnknownTopicOrPartitionError
 from aiokafka.structs import TopicPartition
 from loguru import logger
-
 
 BuildConsumerFn = Callable[[], AIOKafkaConsumer]
 EnsureTopicFn = Callable[[], Awaitable[None]]

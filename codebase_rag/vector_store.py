@@ -1,6 +1,6 @@
-from contextlib import contextmanager
 import time
 from collections.abc import Sequence
+from contextlib import contextmanager
 
 from loguru import logger
 

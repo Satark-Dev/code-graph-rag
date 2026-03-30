@@ -23,6 +23,7 @@ from . import logs as ls
 from .bootstrap import _create_model_from_string
 from .config import ModelConfig, settings
 from .context import app_context
+from .prompts import OPTIMIZATION_PROMPT, OPTIMIZATION_PROMPT_WITH_REFERENCE
 from .session_logging import get_session_context, init_session_log, log_session_event
 from .types_defs import (
     CHAT_LOOP_UI,
@@ -33,7 +34,6 @@ from .types_defs import (
     ConfirmationToolNames,
 )
 from .ui import style
-from .prompts import OPTIMIZATION_PROMPT, OPTIMIZATION_PROMPT_WITH_REFERENCE
 
 if TYPE_CHECKING:
     from prompt_toolkit.key_binding import KeyPressEvent
@@ -120,7 +120,7 @@ async def _run_agent_response_loop(
     tool_names: ConfirmationToolNames,
     model_override: Model | None = None,
 ) -> None:
-    from pydantic_ai import DeferredToolRequests, DeferredToolResults, ToolDenied
+    from pydantic_ai import DeferredToolRequests, DeferredToolResults
 
     deferred_results: DeferredToolResults | None = None
 
@@ -174,8 +174,8 @@ def _process_tool_approvals(
     tool_names: ConfirmationToolNames,
 ):
     from pydantic_ai import DeferredToolResults, ToolDenied
+
     from .types_defs import RawToolArgs
-    from .ui import dim
 
     deferred_results = DeferredToolResults()
 
@@ -235,8 +235,6 @@ def _display_tool_call_diff(
     tool_names: ConfirmationToolNames,
     file_path: str | None = None,
 ) -> None:
-    from .types_defs import ToolArgs
-    from .ui import dim
 
     match tool_name:
         case tool_names.replace_code:
@@ -269,6 +267,7 @@ def _display_tool_call_diff(
 
 def _print_unified_diff(target: str, replacement: str, path: str) -> None:
     import difflib
+
     from .ui import dim
 
     separator = dim(cs.HORIZONTAL_SEPARATOR)

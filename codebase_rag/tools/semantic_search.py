@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-
 from contextlib import contextmanager
+
 from loguru import logger
 from pydantic_ai import Tool
 
@@ -57,10 +57,10 @@ class SemanticSearchService:
             return []
 
         try:
+            from ..config import settings
             from ..embedder import embed_code
             from ..services.semantic_reranker import rerank_semantic_results
             from ..vector_store import search_embeddings
-            from ..config import settings
 
             query_embedding = embed_code(query)
 
@@ -161,7 +161,7 @@ def semantic_code_search(
 ) -> list[SemanticSearchResult]:
     """
     Sync wrapper for semantic search (and optional rerank).
- 
+
     This function **must not** be called from within an active asyncio event loop.
     Prefer `semantic_code_search_async` in async contexts.
     """
@@ -188,7 +188,6 @@ def get_function_source_code(
             extract_source_lines,
             validate_source_location,
         )
-        from ..config import settings  # kept for settings import side-effects if any
 
         with _maybe_owned_ingestor(ingestor) as active_ingestor:
             results = active_ingestor.fetch_all(

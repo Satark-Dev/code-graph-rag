@@ -10,8 +10,11 @@ class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class EvidenceFinding(_StrictModel):
-    justification: dict[str, Any]
+class EvidenceItem(_StrictModel):
+    question: str
+    answer: str
+    code_reference: str | None = None
+    evidence: dict[str, Any] | None = None
 
 
 class ScoringFinding(_StrictModel):
@@ -31,7 +34,7 @@ class TokenUsage(BaseModel):
 class EvidenceToolOutput(BaseModel):
     """LLM output contract for evidence stage (no meta fields)."""
 
-    findings: list[EvidenceFinding]
+    items: list[EvidenceItem]
 
 
 class ScoringToolOutput(BaseModel):
@@ -47,7 +50,7 @@ class RemediationToolOutput(BaseModel):
 
 
 class EvidenceStage(BaseModel):
-    findings: list[EvidenceFinding]
+    items: list[EvidenceItem]
     timings_ms: int = Field(..., ge=0)
     token_usage: TokenUsage
 

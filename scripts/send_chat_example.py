@@ -13,8 +13,7 @@ async def send_chat_example() -> None:
     org_id = "3b393436-119f-45ca-8d53-842d7ec96771"
     repo_path = "/Users/infynnosolutions/Desktop/Code/JavaGoat"
     findings = [
-        "00ffe5f0-8e13-4b39-b29b-512dd40baba0",
-        "fe5fc866-3674-4669-9a7c-169ea09eae85"
+        "00ffe5f0-8e13-4b39-b29b-512dd40baba0"
     ]
 
     payload = ChatJobPayloadV1(

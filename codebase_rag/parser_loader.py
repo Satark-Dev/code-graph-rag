@@ -1,9 +1,9 @@
 import importlib
 import subprocess
 import sys
+import threading
 from copy import deepcopy
 from pathlib import Path
-import threading
 
 from loguru import logger
 from tree_sitter import Language, Parser, Query

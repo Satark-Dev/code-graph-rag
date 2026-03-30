@@ -119,8 +119,8 @@ def test_semantic_code_search_passes_top_k_to_search(
     mock_search_embeddings: MagicMock,
     mock_ingestor: MagicMock,
 ) -> None:
-    from codebase_rag.tools.semantic_search import semantic_code_search
     from codebase_rag.config import settings
+    from codebase_rag.tools.semantic_search import semantic_code_search
 
     with (
         patch("codebase_rag.embedder.embed_code", mock_embed_code),

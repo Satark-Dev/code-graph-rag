@@ -6,7 +6,6 @@ from typing import Any
 
 from loguru import logger
 
-from ..config import settings
 from ..utils.dependencies import has_pgvector
 from ..utils.pg import PgInitKey, ensure_pg_initialized, pg_connect, pg_init_key
 

@@ -64,7 +64,13 @@ async def process_index_job_message(
 
         # Run synchronous GraphUpdater in a thread to avoid blocking the event loop.
         await asyncio.to_thread(updater.run)
-        logger.info("Index job completed for {}", repo_path)
+        logger.info(
+            "Index job completed org_id={} repo_path={} clean={} exclude={}",
+            payload.org_id,
+            repo_path,
+            payload.clean,
+            payload.exclude,
+        )
         return True
     except Exception:
         logger.exception("Index job failed for {}", repo_path)

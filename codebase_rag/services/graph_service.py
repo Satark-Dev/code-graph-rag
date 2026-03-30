@@ -5,7 +5,7 @@ import types
 from collections import defaultdict
 from collections.abc import Generator, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from datetime import UTC, datetime
 
 import mgclient  # ty: ignore[unresolved-import]
@@ -614,7 +614,7 @@ class MemgraphIngestor:
             batch_size=self.batch_size,
         )
 
-    def __enter__(self) -> "MemgraphIngestor":
+    def __enter__(self) -> MemgraphIngestor:
         self._connection.open()
         self._node_flusher.start()
         self._rel_flusher.start()
@@ -640,7 +640,7 @@ class MemgraphIngestor:
             self._rel_flusher.stop()
             self._connection.close()
 
-    async def __aenter__(self) -> "MemgraphIngestor":
+    async def __aenter__(self) -> MemgraphIngestor:
         return self.__enter__()
 
     async def __aexit__(

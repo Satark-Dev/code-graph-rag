@@ -20,9 +20,9 @@ from .bootstrap import (
 )
 from .config import settings
 from .context import app_context
-from .graph_export import export_graph_to_file, prompt_for_unignored_directories
+from .graph_export import prompt_for_unignored_directories
 from .interactive_loop import run_chat_loop, run_optimization_loop
-from .types_defs import ConfirmationToolNames, GraphData
+from .types_defs import ConfirmationToolNames
 from .ui import style
 
 if TYPE_CHECKING:

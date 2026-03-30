@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 
-
 @runtime_checkable
 class IngestorFetchAllProtocol(Protocol):
     def fetch_all(self, query: str, params: dict | None = None) -> list[dict] | list:

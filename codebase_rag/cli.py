@@ -11,18 +11,18 @@ from rich.table import Table
 from . import cli_help as ch
 from . import constants as cs
 from . import logs as ls
-from .config import load_cgrignore_patterns, settings
-from .graph_updater import GraphUpdater
 from .bootstrap import connect_memgraph, update_model_settings
+from .config import load_cgrignore_patterns, settings
 from .context import app_context
 from .graph_export import export_graph_to_file, prompt_for_unignored_directories
+from .graph_updater import GraphUpdater
 from .main import main_async, main_optimize_async, main_single_query
-from .ui import style
 from .parser_loader import load_parsers
 from .services.protobuf_service import ProtobufFileIngestor
 from .tools.health_checker import HealthChecker
 from .tools.language import cli as language_cli
 from .types_defs import ResultRow
+from .ui import style
 
 app = typer.Typer(
     name=cs.PACKAGE_NAME,

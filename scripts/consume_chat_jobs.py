@@ -20,8 +20,8 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from codebase_rag.config import settings
 from codebase_rag.bootstrap import connect_memgraph
+from codebase_rag.config import settings
 from codebase_rag.services.kafka.chat_job_consumer import run_chat_job_consumer
 
 

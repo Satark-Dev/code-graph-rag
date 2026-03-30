@@ -4,13 +4,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from loguru import logger
 
-from . import logs as ls
 from .bootstrap import connect_memgraph, prewarm_semantic_model, warm_core_db
 from .config import kafka_consumer_reload_guard_allows_start, settings
 from .context import app_context
 from .services.semantic_reranker import aclose_deepinfra_client
-from .utils.dependencies import has_semantic_dependencies
-
 
 # Configure confirmation prompts in API context based on CLI flag
 app_context.session.confirm_edits = not (os.environ.get("CGR_NO_CONFIRM") == "1")

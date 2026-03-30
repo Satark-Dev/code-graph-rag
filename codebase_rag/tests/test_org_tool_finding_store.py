@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import codebase_rag.utils.org_tool_finding_store as store
 
 

@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from typing import Iterable
-
 import asyncio
+
 import httpx
 from loguru import logger
 from pydantic import BaseModel, Field

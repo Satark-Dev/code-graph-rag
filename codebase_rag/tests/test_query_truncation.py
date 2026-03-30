@@ -7,7 +7,6 @@ import pytest
 from codebase_rag.tools.codebase_query import create_query_tool
 from codebase_rag.types_defs import ResultRow
 
-
 pytestmark = [pytest.mark.anyio]
 
 

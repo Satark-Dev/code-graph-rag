@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import contextmanager
-from typing import Callable, TypeVar
+from typing import TypeVar
 
 from loguru import logger
-
 
 T = TypeVar("T")
 

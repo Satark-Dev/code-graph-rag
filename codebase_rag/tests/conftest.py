@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 
+
 # AppConfig (strict mode) requires every key from .env.example in os.environ.
 # Seed new optional keys so pytest can import before a developer merges .env.example.
 def _seed_strict_env_example_keys() -> None:

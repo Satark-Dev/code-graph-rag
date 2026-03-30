@@ -1,12 +1,12 @@
 import collections
 from collections.abc import Callable
-from typing import Generic, TypeVar
+from typing import TypeVar
 
 K = TypeVar("K")
 V = TypeVar("V")
 
 
-class EvictingCache(Generic[K, V]):
+class EvictingCache[K, V]:
     """
     A generic LRU cache that can evict based on the number of entries
     and/or an overall cumulative size (e.g. memory footprint).

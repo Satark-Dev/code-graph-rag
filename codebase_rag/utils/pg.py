@@ -3,7 +3,6 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 
-from ..config import settings
 from ..utils.dependencies import has_pgvector
 
 _init_lock = threading.Lock()
