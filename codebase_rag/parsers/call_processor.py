@@ -14,7 +14,13 @@ from .call_resolver import CallResolver
 from .cpp import utils as cpp_utils
 from .import_processor import ImportProcessor
 from .type_inference import TypeInferenceEngine
-from .utils import get_function_captures, is_method_node, sorted_captures
+from .utils import (
+    get_function_captures,
+    is_method_node,
+    resolve_callee_qualified_name_for_graph_edge,
+    resolve_caller_qualified_name_for_graph_edge,
+    sorted_captures,
+)
 
 
 class CallProcessor:
@@ -39,6 +45,26 @@ class CallProcessor:
             import_processor=import_processor,
             type_inference=type_inference,
             class_inheritance=class_inheritance,
+        )
+
+    def _ensure_builtin_callee_stub_if_needed(
+        self, callee_type: str, callee_qn: str
+    ) -> None:
+        """Builtin call targets are not parsed from source; merge a minimal Function node."""
+        if callee_type != cs.NodeLabel.FUNCTION:
+            return
+        if not callee_qn.startswith(f"{cs.BUILTIN_PREFIX}."):
+            return
+        if callee_qn in self._resolver.function_registry:
+            return
+        short = callee_qn.rsplit(cs.SEPARATOR_DOT, 1)[-1]
+        self.ingestor.ensure_node_batch(
+            cs.NodeLabel.FUNCTION,
+            {
+                cs.KEY_QUALIFIED_NAME: callee_qn,
+                cs.KEY_NAME: short,
+                cs.KEY_IS_EXTERNAL: True,
+            },
         )
 
     def _get_node_name(self, node: Node, field: str = cs.FIELD_NAME) -> str | None:
@@ -150,11 +176,23 @@ class CallProcessor:
                 continue
             if language == cs.SupportedLanguage.CPP:
                 method_name = cpp_utils.extract_function_name(method_node)
+            elif language == cs.SupportedLanguage.JAVA:
+                from .java import utils as java_utils
+
+                method_info_java = java_utils.extract_method_info(method_node)
+                method_name = method_info_java.get(cs.KEY_NAME)
             else:
                 method_name = self._get_node_name(method_node)
             if not method_name:
                 continue
-            method_qn = f"{class_qn}{cs.SEPARATOR_DOT}{method_name}"
+            if language == cs.SupportedLanguage.JAVA:
+                parameters = method_info_java.get(cs.KEY_PARAMETERS, [])
+                param_sig = (
+                    f"({','.join(parameters)})" if parameters else cs.EMPTY_PARENS
+                )
+                method_qn = f"{class_qn}{cs.SEPARATOR_DOT}{method_name}{param_sig}"
+            else:
+                method_qn = f"{class_qn}{cs.SEPARATOR_DOT}{method_name}"
             self._ingest_function_calls(
                 method_node,
                 method_qn,
@@ -271,7 +309,7 @@ class CallProcessor:
             return
 
         local_var_types = self._resolver.type_inference.build_local_variable_type_map(
-            caller_node, module_qn, language
+            caller_node, module_qn, language, class_context
         )
 
         cursor = QueryCursor(calls_query)
@@ -316,10 +354,18 @@ class CallProcessor:
                 callee_type, callee_qn = operator_info
             else:
                 continue
+
+            callee_qn = resolve_callee_qualified_name_for_graph_edge(
+                callee_qn, self._resolver.function_registry
+            )
+            self._ensure_builtin_callee_stub_if_needed(callee_type, callee_qn)
+            edge_caller_qn = resolve_caller_qualified_name_for_graph_edge(
+                caller_qn, self._resolver.function_registry
+            )
             if callee_type == cs.NodeLabel.CLASS:
                 logger.debug(
                     ls.CALL_SKIP_CLASS,
-                    caller=caller_qn,
+                    caller=edge_caller_qn,
                     call_name=call_name,
                     callee_qn=callee_qn,
                 )
@@ -327,14 +373,14 @@ class CallProcessor:
 
             logger.debug(
                 ls.CALL_FOUND,
-                caller=caller_qn,
+                caller=edge_caller_qn,
                 call_name=call_name,
                 callee_type=callee_type,
                 callee_qn=callee_qn,
             )
 
             self.ingestor.ensure_relationship_batch(
-                (caller_type, cs.KEY_QUALIFIED_NAME, caller_qn),
+                (caller_type, cs.KEY_QUALIFIED_NAME, edge_caller_qn),
                 cs.RelationshipType.CALLS,
                 (callee_type, cs.KEY_QUALIFIED_NAME, callee_qn),
             )

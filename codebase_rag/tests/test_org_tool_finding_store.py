@@ -7,9 +7,15 @@ class _FakeCursor:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple]] = []
         self.rowcount = 1
+        self._fetch_queue: list[tuple | None] = []
 
     def execute(self, sql: str, params: tuple) -> None:
         self.calls.append((sql, params))
+
+    def fetchone(self):
+        if self._fetch_queue:
+            return self._fetch_queue.pop(0)
+        return None
 
     def __enter__(self):
         return self
@@ -58,4 +64,30 @@ def test_persist_org_tool_finding_scores_updates_score_tag_version_and_explanati
     assert params[5] == store.TAG_OTHER
     assert params[6] == finding_id
     assert params[7] == org_id
+
+
+def test_get_branch_name_for_finding_accepts_finding_type_and_asset_id_fallback(monkeypatch) -> None:
+    monkeypatch.setattr(store, "has_pgvector", lambda: True)
+    fake_conn = _FakeConn()
+    monkeypatch.setattr(store, "pg_connect", lambda autocommit=True: fake_conn)
+
+    # 1st fetchone(): parent_id from the finding
+    # 2nd fetchone(): name from the asset
+    fake_conn.cur._fetch_queue = [("branch_asset_uuid",), ("main",)]
+
+    org_id = "3b393436-119f-45ca-8d53-842d7ec96771"
+    finding_id = "00ffe5f0-8e13-4b39-b29b-512dd40baba0"
+    branch = store.get_branch_name_for_finding(finding_id, org_id)
+    assert branch == "main"
+
+    assert len(fake_conn.cur.calls) == 2
+    sql1, params1 = fake_conn.cur.calls[0]
+    assert "type = 'findings'" in sql1
+    assert params1 == (finding_id, org_id)
+
+    sql2, params2 = fake_conn.cur.calls[1]
+    assert "AND (uid = %s OR id::text = %s)" in sql2
+    assert params2[0] == org_id
+    assert params2[1] == "branch_asset_uuid"
+    assert params2[2] == "branch_asset_uuid"
 

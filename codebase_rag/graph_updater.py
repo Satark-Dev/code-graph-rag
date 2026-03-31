@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sys
 from collections import OrderedDict, defaultdict
 from collections.abc import Callable, ItemsView, KeysView
 from pathlib import Path
@@ -62,12 +61,16 @@ class EmbeddingGenerator:
             return
 
         try:
-            from .embedder import get_embedding_cache
+            from .embedder import clear_embedding_cache, get_embedding_cache
             from .vector_store import (
                 close_pgvector_client,
                 store_embedding_batch,
                 verify_stored_ids,
             )
+
+            # Ensure we start with a clean global cache state for this repository.
+            clear_embedding_cache()
+            get_embedding_cache(self.repo_path)
 
             logger.info(ls.PASS_4_EMBEDDINGS)
 
@@ -106,7 +109,9 @@ class EmbeddingGenerator:
                 if source_code := self._extract_source_code(
                     qualified_name, file_path, start_line, end_line
                 ):
-                    pending.append((node_id, qualified_name, source_code))
+                    # (H) Prepend structural context to improve semantic search accuracy
+                    contextual_code = f"Qualified Name: {qualified_name}\nFile: {file_path}\n\n{source_code}"
+                    pending.append((node_id, qualified_name, contextual_code))
                     expected_ids.add(node_id)
                     if len(pending) >= embedding_batch_size:
                         embedded_count += self._flush_semantic_batch(
@@ -143,8 +148,10 @@ class EmbeddingGenerator:
             get_embedding_cache().save()
             close_pgvector_client()
 
-        except Exception as e:  # noqa: BLE001
-            logger.warning(ls.EMBEDDING_GENERATION_FAILED, error=e)
+        except (AttributeError, ValueError, OSError, RuntimeError) as e:
+            logger.error(ls.EMBEDDING_GENERATION_FAILED, error=e)
+        except Exception:
+            logger.exception(ls.EMBEDDING_GENERATION_FAILED_UNEXPECTED)
 
     def _flush_semantic_batch(
         self,
@@ -168,7 +175,7 @@ class EmbeddingGenerator:
                 max_length=settings.EMBEDDING_MAX_LENGTH,
                 batch_size=embedding_batch_size,
             )
-        except Exception as e:  # noqa: BLE001
+        except (ValueError, RuntimeError) as e:
             logger.warning(ls.EMBEDDING_FAILED, name="batch", error=e)
             embeddings = []
             for _, qn, snippet in pending:
@@ -176,8 +183,11 @@ class EmbeddingGenerator:
                     embeddings.append(
                         embed_code(snippet, max_length=settings.EMBEDDING_MAX_LENGTH)
                     )
-                except Exception as embed_err:  # noqa: BLE001
+                except (ValueError, RuntimeError) as embed_err:
                     logger.warning(ls.EMBEDDING_FAILED, name=qn, error=embed_err)
+                    embeddings.append(None)
+                except Exception:
+                    logger.exception(ls.EMBEDDING_UNEXPECTED_FAILURE, name=qn)
                     embeddings.append(None)
 
         for (node_id, qualified_name, _), embedding in zip(pending, embeddings):
@@ -214,8 +224,10 @@ class EmbeddingGenerator:
                 )
             else:
                 logger.info(ls.EMBEDDING_RECONCILE_OK.format(count=len(expected_ids)))
-        except Exception as e:  # noqa: BLE001
+        except (ValueError, RuntimeError, KeyError) as e:
             logger.warning(ls.EMBEDDING_RECONCILE_FAILED.format(error=e))
+        except Exception:
+            logger.exception(ls.EMBEDDING_RECONCILE_UNEXPECTED)
 
     def _extract_source_code(
         self, qualified_name: str, file_path: str, start_line: int, end_line: int
@@ -285,9 +297,6 @@ class FunctionRegistryTrie:
         self._entries[qualified_name] = func_type
 
         parts = qualified_name.split(cs.SEPARATOR_DOT)
-        if self._simple_name_lookup is not None and parts:
-            self._simple_name_lookup[parts[-1]].add(qualified_name)
-
         current: TrieNode = self.root
 
         for part in parts:
@@ -319,12 +328,6 @@ class FunctionRegistryTrie:
             return
 
         parts = qualified_name.split(cs.SEPARATOR_DOT)
-        if self._simple_name_lookup is not None and parts:
-            simple_name = parts[-1]
-            if simple_name in self._simple_name_lookup:
-                self._simple_name_lookup[simple_name].discard(qualified_name)
-                if not self._simple_name_lookup[simple_name]:
-                    del self._simple_name_lookup[simple_name]
 
         del self._entries[qualified_name]
         self._cleanup_trie_path(parts, self.root)
@@ -404,11 +407,8 @@ class FunctionRegistryTrie:
         return [qn for qn, _ in matches]
 
     def find_ending_with(self, suffix: str) -> list[QualifiedName]:
-        if self._simple_name_lookup is not None and suffix in self._simple_name_lookup:
-            # (H) O(1) lookup using the simple_name_lookup index
-            return sorted(self._simple_name_lookup[suffix])
-        # (H) Fallback to linear scan if no index available
-        return sorted(qn for qn in self._entries.keys() if qn.endswith(f".{suffix}"))
+        suffix_str = str(suffix)
+        return sorted(qn for qn in self._entries.keys() if qn.endswith(suffix_str))
 
     def find_with_prefix(self, prefix: str) -> list[tuple[QualifiedName, NodeType]]:
         node = self._navigate_to_prefix(prefix)
@@ -469,9 +469,14 @@ class BoundedASTCache:
 
     def _should_evict_for_memory(self) -> bool:
         try:
-            cache_size = sum(sys.getsizeof(v) for v in self.cache.values())
-            return cache_size > self.max_memory_bytes
-        except Exception:
+            # (H) Approximate memory by counting nodes and character length of cached ASTs.
+            # Node objects are wrappers; text length is a much better proxy for memory usage.
+            total_size_estimate = 0
+            for root, _ in self.cache.values():
+                total_size_estimate += len(root.text) if root.text else 0
+
+            return total_size_estimate > self.max_memory_bytes
+        except (AttributeError, TypeError):
             return (
                 len(self.cache)
                 > self.max_entries * settings.CACHE_MEMORY_THRESHOLD_RATIO

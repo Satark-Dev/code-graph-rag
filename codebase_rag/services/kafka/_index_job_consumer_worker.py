@@ -4,11 +4,16 @@ from typing import Any
 from loguru import logger
 
 from ... import constants as cs
-from ...config import load_cgrignore_patterns
+from ...config import load_cgrignore_patterns, settings
 from ...graph_updater import GraphUpdater
 from ...parser_loader import load_parsers
 from ...request_context import org_id_context
-from ...utils.org_tool_finding_store import get_branch_name_for_finding
+from ...utils.org_tool_finding_store import (
+    get_all_child_findings_for_branch,
+    get_branch_name_for_finding,
+)
+from .stage_job_payloads import EvidenceJobPayloadV1
+from .producer import kafka_service
 from .index_job_payload import IndexJobPayload
 from .repo_manager import RepoManager
 
@@ -26,6 +31,7 @@ async def process_index_job_message(
     """
     invocation = payload.invocation_id
     target_repo_path = None
+    ctx_token = org_id_context.set(payload.org_id)
 
     try:
         # Determine branch name from the finding
@@ -33,6 +39,15 @@ async def process_index_job_message(
             payload.org_tool_finding_id,
             payload.org_id,
         )
+        if not branch_name or not str(branch_name).strip():
+            logger.error(
+                "Index job cannot proceed: missing branch name for finding {} (org_id={}, repo_url={}, invocation_id={})",
+                payload.org_tool_finding_id,
+                payload.org_id,
+                payload.repo_url,
+                invocation,
+            )
+            return True  # Skip poison pill: input is incomplete
 
         # Ensuring repository exists in the deterministic process folder
         target_repo_path = await repo_manager.ensure_cloned(
@@ -41,7 +56,6 @@ async def process_index_job_message(
             branch=branch_name,
         )
 
-        ctx_token = org_id_context.set(payload.org_id)
         try:
             from pathlib import Path
 
@@ -80,14 +94,48 @@ async def process_index_job_message(
                 payload.exclude,
                 invocation,
             )
+            # After successful indexing, enqueue one evidence job per finding for this branch
+            # (children of the same branch asset). This ensures evidence/scoring/remediation
+            # run separately for each finding.
+            try:
+                all_finding_ids = get_all_child_findings_for_branch(
+                    payload.org_tool_finding_id,
+                    payload.org_id,
+                )
+                await kafka_service.start()
+                for fid in all_finding_ids:
+                    evidence_payload = EvidenceJobPayloadV1(
+                        org_id=payload.org_id,
+                        org_tool_findings_ids=[fid],
+                        invocation_id=invocation,
+                    )
+                    await kafka_service.send(
+                        settings.KAFKA_EVIDENCE_JOBS_TOPIC,
+                        value=evidence_payload.model_dump(mode="json"),
+                        key=payload.org_id,
+                    )
+                logger.info(
+                    "Enqueued {} evidence job(s) topic={} org_id={} invocation_id={}",
+                    len(all_finding_ids),
+                    settings.KAFKA_EVIDENCE_JOBS_TOPIC,
+                    payload.org_id,
+                    invocation,
+                )
+            except Exception:
+                logger.exception(
+                    "Index job {} org_id={}: failed to enqueue evidence job; keeping index result",
+                    payload.repo_url,
+                    payload.org_id,
+                )
+
             return True
         except Exception:
             logger.exception("Index job failed for {} (invocation={})", payload.repo_url, invocation)
             return False
-        finally:
-            org_id_context.reset(ctx_token)
 
     except Exception as e:
         logger.error("Failed to prepare repository for indexing: {}", e)
         return True  # Skip poison pill
+    finally:
+        org_id_context.reset(ctx_token)
 

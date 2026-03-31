@@ -122,7 +122,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = ["T201"]
-"scripts/consume_chat_jobs.py" = ["E402", "T201"]
+"scripts/consume_evidence_jobs.py" = ["E402", "T201"]
+"scripts/consume_scoring_jobs.py" = ["E402", "T201"]
+"scripts/consume_remediation_jobs.py" = ["E402", "T201"]
 "benchmarks/**" = ["T201"]
 
 [tool.ruff.format]

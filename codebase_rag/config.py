@@ -279,19 +279,42 @@ class AppConfig(BaseSettings):
     def ollama_endpoint(self) -> str:
         return f"{self.OLLAMA_BASE_URL.rstrip('/')}/v1"
 
-    # --- Kafka (chat job consumer) ---
+    # --- Kafka ---
     KAFKA_BOOTSTRAP_SERVERS: str = ""
-    KAFKA_CHAT_JOBS_TOPIC: str = "cgr.chat.jobs"
-    KAFKA_CHAT_CONSUMER_GROUP_ID: str = "cgr-chat-jobs"
-    KAFKA_CHAT_MAX_CONCURRENCY: int = Field(4, ge=1)
-    KAFKA_CHAT_AUTO_OFFSET_RESET: str = "latest"
-    KAFKA_CHAT_SHUTDOWN_GRACE_SECONDS: float = Field(30.0, gt=0)
-    KAFKA_CHAT_FETCH_MAX_WAIT_MS: int = Field(500, ge=1)
-    KAFKA_CHAT_SESSION_TIMEOUT_MS: int = Field(30_000, ge=1)
-    KAFKA_CHAT_RECONNECT_MAX_SECONDS: float = Field(60.0, gt=0)
-    KAFKA_CHAT_RECONNECT_BACKOFF_INITIAL: float = Field(1.0, gt=0)
-    KAFKA_CHAT_TOPIC_NUM_PARTITIONS: int = Field(3, ge=1)
-    KAFKA_CHAT_TOPIC_REPLICATION_FACTOR: int = Field(1, ge=1)
+
+    # --- Kafka (stage-separated chat pipeline) ---
+    KAFKA_EVIDENCE_JOBS_TOPIC: str = "cgr.chat.evidence.jobs"
+    KAFKA_EVIDENCE_CONSUMER_GROUP_ID: str = "cgr-evidence-jobs"
+    KAFKA_EVIDENCE_MAX_CONCURRENCY: int = Field(4, ge=1)
+    KAFKA_EVIDENCE_AUTO_OFFSET_RESET: str = "latest"
+    KAFKA_EVIDENCE_FETCH_MAX_WAIT_MS: int = Field(500, ge=1)
+    KAFKA_EVIDENCE_SESSION_TIMEOUT_MS: int = Field(30_000, ge=1)
+    KAFKA_EVIDENCE_RECONNECT_MAX_SECONDS: float = Field(60.0, gt=0)
+    KAFKA_EVIDENCE_RECONNECT_BACKOFF_INITIAL: float = Field(1.0, gt=0)
+    KAFKA_EVIDENCE_TOPIC_NUM_PARTITIONS: int = Field(3, ge=1)
+    KAFKA_EVIDENCE_TOPIC_REPLICATION_FACTOR: int = Field(1, ge=1)
+
+    KAFKA_SCORING_JOBS_TOPIC: str = "cgr.chat.scoring.jobs"
+    KAFKA_SCORING_CONSUMER_GROUP_ID: str = "cgr-scoring-jobs"
+    KAFKA_SCORING_MAX_CONCURRENCY: int = Field(4, ge=1)
+    KAFKA_SCORING_AUTO_OFFSET_RESET: str = "latest"
+    KAFKA_SCORING_FETCH_MAX_WAIT_MS: int = Field(500, ge=1)
+    KAFKA_SCORING_SESSION_TIMEOUT_MS: int = Field(30_000, ge=1)
+    KAFKA_SCORING_RECONNECT_MAX_SECONDS: float = Field(60.0, gt=0)
+    KAFKA_SCORING_RECONNECT_BACKOFF_INITIAL: float = Field(1.0, gt=0)
+    KAFKA_SCORING_TOPIC_NUM_PARTITIONS: int = Field(3, ge=1)
+    KAFKA_SCORING_TOPIC_REPLICATION_FACTOR: int = Field(1, ge=1)
+
+    KAFKA_REMEDIATION_JOBS_TOPIC: str = "cgr.chat.remediation.jobs"
+    KAFKA_REMEDIATION_CONSUMER_GROUP_ID: str = "cgr-remediation-jobs"
+    KAFKA_REMEDIATION_MAX_CONCURRENCY: int = Field(4, ge=1)
+    KAFKA_REMEDIATION_AUTO_OFFSET_RESET: str = "latest"
+    KAFKA_REMEDIATION_FETCH_MAX_WAIT_MS: int = Field(500, ge=1)
+    KAFKA_REMEDIATION_SESSION_TIMEOUT_MS: int = Field(30_000, ge=1)
+    KAFKA_REMEDIATION_RECONNECT_MAX_SECONDS: float = Field(60.0, gt=0)
+    KAFKA_REMEDIATION_RECONNECT_BACKOFF_INITIAL: float = Field(1.0, gt=0)
+    KAFKA_REMEDIATION_TOPIC_NUM_PARTITIONS: int = Field(3, ge=1)
+    KAFKA_REMEDIATION_TOPIC_REPLICATION_FACTOR: int = Field(1, ge=1)
 
     # --- Kafka (index job consumer) ---
     KAFKA_OBSERVABILITY_TOPIC: str = "queue.ai.invocation.logs"
@@ -308,13 +331,18 @@ class AppConfig(BaseSettings):
     KAFKA_INDEX_TOPIC_REPLICATION_FACTOR: int = Field(1, ge=1)
     KAFKA_REPO_ROOT: str = Field("/tmp/cgr_repos", validation_alias="CGR_KAFKA_REPO_ROOT")
 
-    @field_validator("KAFKA_CHAT_AUTO_OFFSET_RESET", mode="after")
+    @field_validator(
+        "KAFKA_EVIDENCE_AUTO_OFFSET_RESET",
+        "KAFKA_SCORING_AUTO_OFFSET_RESET",
+        "KAFKA_REMEDIATION_AUTO_OFFSET_RESET",
+        mode="after",
+    )
     @classmethod
-    def _kafka_auto_offset_reset(cls, value: str) -> str:
+    def _kafka_stage_auto_offset_reset(cls, value: str) -> str:
         normalized = value.strip().lower()
         if normalized not in ("latest", "earliest"):
             raise ValueError(
-                "KAFKA_CHAT_AUTO_OFFSET_RESET must be 'latest' or 'earliest'"
+                "Kafka stage AUTO_OFFSET_RESET must be 'latest' or 'earliest'"
             )
         return normalized
 
@@ -558,8 +586,12 @@ def _assert_env_matches_example(*, strict: bool) -> None:
     expected = _env_example_keys(example_path)
     if not expected:
         return
+    # Only enforce keys that are required by AppConfig (Field(...)).
+    # Optional keys (those with defaults) may exist in .env.example for documentation
+    # without forcing every developer to add them to their .env.
+    required = {k.lower() for k in _required_env_keys()}
     present = {key.lower() for key in os.environ.keys()}
-    missing = [k for k in expected if k.lower() not in present]
+    missing = [k for k in expected if k.lower() in required and k.lower() not in present]
     if missing:
         missing_display = "\n  - ".join(missing)
         raise ValueError(

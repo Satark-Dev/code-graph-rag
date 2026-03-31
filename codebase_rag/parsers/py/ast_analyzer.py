@@ -19,6 +19,15 @@ if TYPE_CHECKING:
     from ..factory import ASTCacheProtocol
     from ..js_ts.type_inference import JsTypeInferenceEngine
 
+    class _VariableAnalyzerDeps(Protocol):
+        def _infer_type_from_expression(
+            self, node: Node, module_qn: str
+        ) -> str | None: ...
+
+        def _infer_type_from_parameter_name(
+            self, param_name: str, module_qn: str
+        ) -> str | None: ...
+
     class _AstAnalyzerDeps(Protocol):
         def build_local_variable_type_map(
             self, caller_node: Node, module_qn: str
@@ -110,19 +119,34 @@ class PythonAstAnalyzerMixin(_AstBase):
             assignments, local_var_types, module_qn
         )
 
-    def _traverse_for_assignments(
-        self,
-        node: Node,
-        local_var_types: dict[str, str],
-        module_qn: str,
-        processor: Callable[[Node, dict[str, str], str], None],
+    def _analyze_class_level_declarations(
+        self, class_node: Node, local_var_types: dict[str, str], module_qn: str
     ) -> None:
-        stack: list[Node] = [node]
-        while stack:
-            current = stack.pop()
-            if current.type == cs.TS_PY_ASSIGNMENT:
-                processor(current, local_var_types, module_qn)
-            stack.extend(reversed(current.children))
+        body_node = class_node.child_by_field_name(cs.TS_FIELD_BODY)
+        if not body_node:
+            return
+
+        for child in body_node.children:
+            if child.type == cs.TS_PY_EXPRESSION_STATEMENT:
+                for subchild in child.children:
+                    if subchild.type == cs.TS_PY_TYPE_ASSIGNMENT:
+                        self._process_type_assignment(subchild, local_var_types)
+
+    def _process_type_assignment(
+        self, node: Node, local_var_types: dict[str, str]
+    ) -> None:
+        # (H) Handle "db: Database" annotations in class body
+        name_node = node.child_by_field_name(cs.TS_FIELD_NAME)
+        type_node = node.child_by_field_name(cs.TS_FIELD_TYPE)
+        if (
+            name_node
+            and type_node
+            and (name := safe_decode_text(name_node))
+            and (type_name := safe_decode_text(type_node))
+        ):
+            local_var_types[name] = type_name
+            # Also support self.name in methods
+            local_var_types[f"{cs.PY_SELF_PREFIX}{name}"] = type_name
 
     def _process_assignment_simple(
         self, assignment_node: Node, local_var_types: dict[str, str], module_qn: str
@@ -245,6 +269,38 @@ class PythonAstAnalyzerMixin(_AstBase):
 
                 if safe_decode_text(method_name_node) == method_name:
                     return method_node
+
+        return None
+
+    def _find_class_node(self, class_qn: str) -> Node | None:
+        qn_parts = class_qn.split(cs.SEPARATOR_DOT)
+        if len(qn_parts) < 2:
+            return None
+
+        class_name = qn_parts[-1]
+        expected_module = cs.SEPARATOR_DOT.join(qn_parts[:-1])
+        file_path = self.module_qn_to_file_path.get(expected_module)
+        if not file_path or file_path not in self.ast_cache:
+            return None
+
+        root_node, language = self.ast_cache[file_path]
+        if language != cs.SupportedLanguage.PYTHON:
+            return None
+
+        lang_queries = self.queries[cs.SupportedLanguage.PYTHON]
+        class_query = lang_queries[cs.QUERY_KEY_CLASSES]
+        if not class_query:
+            return None
+        cursor = QueryCursor(class_query)
+        captures = sorted_captures(cursor, root_node)
+
+        for class_node in captures.get(cs.QUERY_CAPTURE_CLASS, []):
+            if not isinstance(class_node, Node):
+                continue
+
+            name_node = class_node.child_by_field_name(cs.TS_FIELD_NAME)
+            if name_node and safe_decode_text(name_node) == class_name:
+                return class_node
 
         return None
 

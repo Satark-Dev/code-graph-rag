@@ -24,17 +24,92 @@ class RepoManager:
         base_dir.mkdir(parents=True, exist_ok=True)
         return base_dir
 
-    def get_repo_path(self, org_id: str, branch: str | None) -> Path:
+    def get_repo_path(self, org_id: str, branch: str) -> Path:
         """Derives a deterministic local path for a (org, branch) pair."""
-        # Using org_id and branch name to create a stable folder name
-        safe_branch = (branch or "default").replace("/", "_").replace("\\", "_")
+        safe_branch = branch.replace("/", "_").replace("\\", "_")
         return self.get_base_temp_dir() / f"{org_id}_{safe_branch}"
+
+    def _in_use_dir(self, repo_path: Path) -> Path:
+        return repo_path / ".cgr_in_use"
+
+    async def mark_in_use(self, *, repo_path: str, invocation_id: str) -> None:
+        """Mark a repo checkout as in-use by an invocation (reference-count via files)."""
+        rid = invocation_id.strip()
+        if not rid:
+            raise ValueError("invocation_id is required")
+        p = Path(repo_path).resolve()
+        async with self._lock:
+            d = self._in_use_dir(p)
+            d.mkdir(parents=True, exist_ok=True)
+            (d / rid).write_text("1", encoding="utf-8")
+
+    async def release_and_cleanup_if_unused(self, *, repo_path: str, invocation_id: str) -> bool:
+        """
+        Remove this invocation's in-use marker. If no other markers remain, delete the repo.
+        Returns True if the repo was deleted.
+        """
+        rid = invocation_id.strip()
+        if not rid:
+            raise ValueError("invocation_id is required")
+        p = Path(repo_path).resolve()
+        async with self._lock:
+            d = self._in_use_dir(p)
+            marker = d / rid
+            if marker.exists():
+                marker.unlink(missing_ok=True)
+            # Remove repo only when no other invocations are using it.
+            remaining: list[Path] = []
+            if d.is_dir():
+                remaining = [x for x in d.iterdir() if x.is_file()]
+            if not remaining:
+                try:
+                    shutil.rmtree(p, ignore_errors=True)
+                    logger.info("Cleaned up local repository checkout at {}", str(p))
+                    return True
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Repo cleanup failed for {}: {}", str(p), e)
+            return False
+
+    def require_existing_local_clone(self, org_id: str, branch: str | None) -> str:
+        """
+        Return the deterministic local path only if a non-empty directory already exists.
+
+        Chat jobs must use this (no git clone). Index jobs use ``ensure_cloned`` to populate
+        the same path first.
+        """
+        if not branch or not str(branch).strip():
+            raise ValueError(
+                "Branch name is required; got empty/None. "
+                "Ensure the finding has a branch asset with a valid name."
+            )
+        branch = branch.strip()
+        target_path = self.get_repo_path(org_id, branch)
+        target_str = str(target_path.resolve())
+        if not target_path.is_dir():
+            raise ValueError(
+                f"Local repository clone not found at {target_str}. "
+                "Run an index job for this org and branch first so the repository is cloned "
+                "and indexed under KAFKA_REPO_ROOT."
+            )
+        if not any(target_path.iterdir()):
+            raise ValueError(
+                f"Local repository path {target_str} exists but is empty. "
+                "Run an index job for this org and branch first."
+            )
+        return target_str
 
     async def ensure_cloned(self, repo_url: str, org_id: str, branch: str | None) -> str:
         """
         Ensures the repository is cloned into the deterministic path.
         If it already exists, skips cloning and returns the path.
         """
+        if not branch or not branch.strip():
+            raise ValueError(
+                "Branch name is required for cloning; got empty/None. "
+                "Ensure the finding has a branch asset with a valid name."
+            )
+
+        branch = branch.strip()
         target_path = self.get_repo_path(org_id, branch)
         target_str = str(target_path.resolve())
 
@@ -52,12 +127,11 @@ class RepoManager:
             logger.info(
                 "Cloning {} (branch: {}) into {}...",
                 repo_url,
-                branch or "default",
+                branch,
                 target_str,
             )
             git_cmd = ["git", "clone", "--depth", "1"]
-            if branch:
-                git_cmd.extend(["-b", branch])
+            git_cmd.extend(["-b", branch])
             git_cmd.extend([repo_url, target_str])
 
             try:

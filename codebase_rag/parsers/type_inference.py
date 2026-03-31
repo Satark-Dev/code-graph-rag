@@ -117,12 +117,16 @@ class TypeInferenceEngine:
         return self._python_type_inference
 
     def build_local_variable_type_map(
-        self, caller_node: ASTNode, module_qn: str, language: cs.SupportedLanguage
+        self,
+        caller_node: ASTNode,
+        module_qn: str,
+        language: cs.SupportedLanguage,
+        class_context: str | None = None,
     ) -> dict[str, str]:
         match language:
             case cs.SupportedLanguage.PYTHON:
                 return self.python_type_inference.build_local_variable_type_map(
-                    caller_node, module_qn
+                    caller_node, module_qn, class_context
                 )
             case cs.SupportedLanguage.JS | cs.SupportedLanguage.TS:
                 return self.js_type_inference.build_local_variable_type_map(

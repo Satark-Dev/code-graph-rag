@@ -91,7 +91,9 @@ def get_branch_name_for_finding(finding_id: str, org_id: str) -> str | None:
                 """
                 SELECT parent_id
                 FROM public.org_tool_findings
-                WHERE id = %s::uuid AND org_id = %s::uuid AND type = 'findings'
+                WHERE id = %s::uuid
+                  AND org_id = %s::uuid
+                  AND type = 'findings'
                 """,
                 (finding_id, org_id),
             )
@@ -105,9 +107,11 @@ def get_branch_name_for_finding(finding_id: str, org_id: str) -> str | None:
                 """
                 SELECT name
                 FROM public.org_tool_findings
-                WHERE uid = %s AND org_id = %s::uuid AND type = 'asset'
+                WHERE org_id = %s::uuid
+                  AND type = 'asset'
+                  AND (uid = %s OR id::text = %s)
                 """,
-                (branch_asset_uid, org_id),
+                (org_id, branch_asset_uid, str(branch_asset_uid)),
             )
             row = cur.fetchone()
             if not row or not row[0]:
@@ -127,13 +131,71 @@ def get_branch_name_for_finding(finding_id: str, org_id: str) -> str | None:
             conn.close()
 
 
+def get_all_child_findings_for_branch(finding_id: str, org_id: str) -> list[str]:
+    """
+    Given a single finding id, return ALL finding ids for the same branch asset:
+
+    1. Look up that finding (type='findings') to get its parent_id = branch_asset_uid.
+    2. Find all rows with type='findings' and parent_id = branch_asset_uid.
+    """
+    if not has_pgvector():
+        return [finding_id]
+
+    try:
+        conn = pg_connect(autocommit=True)
+        with conn.cursor() as cur:
+            # 1. Get branch asset UID from the seed finding
+            cur.execute(
+                """
+                SELECT parent_id
+                FROM public.org_tool_findings
+                WHERE id = %s::uuid
+                  AND org_id = %s::uuid
+                  AND type = 'findings'
+                """,
+                (finding_id, org_id),
+            )
+            row = cur.fetchone()
+            if not row or not row[0]:
+                return [finding_id]
+            branch_asset_uid = row[0]
+
+            # 2. Get all child findings that share this branch_asset_uid as parent_id
+            cur.execute(
+                """
+                SELECT id::text
+                FROM public.org_tool_findings
+                WHERE org_id = %s::uuid
+                  AND type = 'findings'
+                  AND parent_id = %s
+                ORDER BY created_at ASC, id ASC
+                """,
+                (org_id, branch_asset_uid),
+            )
+            ids = [str(r[0]) for r in (cur.fetchall() or []) if r and r[0]]
+            return ids or [finding_id]
+    except Exception as e:
+        logger.warning(
+            "Failed to fetch child findings for branch (seed finding {}, org {}): {}",
+            finding_id,
+            org_id,
+            e,
+        )
+        return [finding_id]
+    finally:
+        if "conn" in locals():
+            conn.close()
+
+
 def get_chat_finding_metadata(finding_id: str, org_id: str) -> tuple[str | None, str | None]:
     """
     Retrieves (repo_url, branch_name) from the database by:
     1. Finding the finding (type='findings') -> get parent_id (Branch Asset).
     2. Finding the Branch Asset (type='asset', uid=parent_id) -> get its 'name' (branch) and parent_id (Repo Asset).
     3. Finding the Repo Asset (type='asset', uid=parent_id_2) -> get its 'metadata' (clone URL).
-    Used for chat where the repo URL must be resolved internally.
+
+    Kafka chat jobs do not use this: they resolve the local clone via ``get_branch_name_for_finding``
+    and ``RepoManager.require_existing_local_clone`` only (no remote URL).
     """
     if not has_pgvector():
         return None, None
@@ -146,7 +208,9 @@ def get_chat_finding_metadata(finding_id: str, org_id: str) -> tuple[str | None,
                 """
                 SELECT parent_id
                 FROM public.org_tool_findings
-                WHERE id = %s::uuid AND org_id = %s::uuid AND type = 'findings'
+                WHERE id = %s::uuid
+                  AND org_id = %s::uuid
+                  AND type = 'findings'
                 """,
                 (finding_id, org_id),
             )
@@ -160,9 +224,11 @@ def get_chat_finding_metadata(finding_id: str, org_id: str) -> tuple[str | None,
                 """
                 SELECT name, parent_id
                 FROM public.org_tool_findings
-                WHERE uid = %s AND org_id = %s::uuid AND type = 'asset'
+                WHERE org_id = %s::uuid
+                  AND type = 'asset'
+                  AND (uid = %s OR id::text = %s)
                 """,
-                (branch_asset_uid, org_id),
+                (org_id, branch_asset_uid, str(branch_asset_uid)),
             )
             row = cur.fetchone()
             if not row:
@@ -178,9 +244,11 @@ def get_chat_finding_metadata(finding_id: str, org_id: str) -> tuple[str | None,
                 """
                 SELECT metadata
                 FROM public.org_tool_findings
-                WHERE uid = %s AND org_id = %s::uuid AND type = 'asset'
+                WHERE org_id = %s::uuid
+                  AND type = 'asset'
+                  AND (uid = %s OR id::text = %s)
                 """,
-                (repo_asset_uid, org_id),
+                (org_id, repo_asset_uid, str(repo_asset_uid)),
             )
             row = cur.fetchone()
             repo_url = None

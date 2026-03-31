@@ -618,6 +618,21 @@ def serve(
         "--no-confirm",
         help=ch.HELP_NO_CONFIRM,
     ),
+    no_kafka_consumers: bool = typer.Option(
+        False,
+        "--no-kafka-consumers",
+        help=ch.HELP_NO_EMBEDDED_KAFKA_CONSUMERS,
+    ),
+    no_kafka_index_consumer: bool = typer.Option(
+        False,
+        "--no-kafka-index-consumer",
+        help=ch.HELP_NO_EMBEDDED_KAFKA_INDEX_CONSUMER,
+    ),
+    no_kafka_chat_consumer: bool = typer.Option(
+        False,
+        "--no-kafka-chat-consumer",
+        help=ch.HELP_NO_EMBEDDED_KAFKA_CHAT_CONSUMER,
+    ),
 ) -> None:
     try:
         import os
@@ -631,6 +646,12 @@ def serve(
 
     if no_confirm:
         os.environ["CGR_NO_CONFIRM"] = "1"
+    if no_kafka_consumers:
+        os.environ["CGR_EMBEDDED_KAFKA_CONSUMERS"] = "0"
+    elif no_kafka_index_consumer:
+        os.environ["CGR_EMBEDDED_KAFKA_INDEX_CONSUMERS"] = "0"
+    if not no_kafka_consumers and no_kafka_chat_consumer:
+        os.environ["CGR_EMBEDDED_KAFKA_CHAT_CONSUMERS"] = "0"
 
     app_context.console.print(style(f"Starting FastAPI server on {host}:{port}", cs.Color.GREEN))
     uvicorn.run("codebase_rag.api:app", host=host, port=port, reload=reload)

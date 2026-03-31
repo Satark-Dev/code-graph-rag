@@ -78,7 +78,7 @@ class ChatModels(BaseModel):
 
 
 class ChatResponsePayload(BaseModel):
-    run_id: UUID
+    invocation_id: UUID
     evidence: EvidenceStage
     scoring: ScoringStage
     remediation: RemediationStage
@@ -88,7 +88,7 @@ class ChatResponsePayload(BaseModel):
 class ApiErrorDetail(BaseModel):
     code: str
     message: str
-    run_id: UUID | None = None
+    invocation_id: UUID | None = None
 
 
 class ApiErrorResponse(BaseModel):

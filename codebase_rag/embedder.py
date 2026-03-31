@@ -75,10 +75,13 @@ class EmbeddingCache:
 _embedding_cache: EmbeddingCache | None = None
 
 
-def get_embedding_cache() -> EmbeddingCache:
+def get_embedding_cache(repo_path: Path | None = None) -> EmbeddingCache:
     global _embedding_cache
     if _embedding_cache is None:
-        cache_path = Path(settings.TARGET_REPO_PATH) / cs.EMBEDDING_CACHE_FILENAME
+        # (H) Use the provided repo_path, or fall back to current directory for CLI/local use.
+        # Deprecated settings.TARGET_REPO_PATH is no longer used.
+        base_path = repo_path or Path.cwd()
+        cache_path = base_path / cs.EMBEDDING_CACHE_FILENAME
         _embedding_cache = EmbeddingCache(path=cache_path)
         _embedding_cache.load()
     return _embedding_cache

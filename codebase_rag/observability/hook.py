@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextvars
+import json
 import time
 from dataclasses import dataclass
 from uuid import uuid4
@@ -44,6 +45,30 @@ class KafkaObservabilityHook:
     def _get_current_ms(self) -> int:
         return int(time.time() * 1000)
 
+    @staticmethod
+    def _format_message_markdown(*, content: str, actor: str) -> str:
+        """
+        Normalize all ai.message.created payloads to markdown so the frontend can render them
+        consistently (prompts, JSON payloads, model outputs).
+        """
+        raw = content if isinstance(content, str) else str(content)
+        text = raw.strip()
+
+        # Prefer pretty JSON when possible (most prompts + LLM outputs are JSON).
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = None
+
+        if parsed is not None:
+            pretty = json.dumps(parsed, indent=2, ensure_ascii=False, default=str)
+            return f"```json\n{pretty}\n```"
+
+        fence_lang = "text"
+        if actor.lower().startswith("system"):
+            fence_lang = "text"
+        return f"```{fence_lang}\n{text}\n```" if text else f"```{fence_lang}\n\n```"
+
     async def before_chat(
         self,
         org_id: str,
@@ -70,11 +95,12 @@ class KafkaObservabilityHook:
         if not ctx:
             return
 
+        md = self._format_message_markdown(content=content, actor=actor)
         event = AIMessageCreated(
             invocation_id=ctx.invocation_id,
             org_id=ctx.org_id,
             timestamp_ms=self._get_current_ms(),
-            content=content,
+            content=md,
             tool_call_id=tool_call_id,
             actor=actor,
         )

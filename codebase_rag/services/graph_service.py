@@ -419,9 +419,9 @@ class RelationshipBatchFlusher(BaseBatchFlusher):
             RelBatchRow(from_val=from_val, to_val=to_val, props=properties or {})
         )
         self._rel_count += 1
-        if self._rel_count >= self._batch_size:
-            logger.debug(ls.MG_REL_BUFFER_FLUSH, size=self._batch_size)
-            self.flush()
+
+    def needs_flush(self) -> bool:
+        return self._rel_count >= self._batch_size
 
     def flush(self) -> None:
         if not self._rel_count:
@@ -689,6 +689,11 @@ class MemgraphIngestor:
             to_spec,
             properties,
         )
+        if self._rel_flusher.needs_flush():
+            # Ensure relationship MATCH can see buffered nodes.
+            logger.debug(ls.MG_REL_BUFFER_FLUSH, size=self.batch_size)
+            self.flush_nodes()
+            self.flush_relationships()
 
     def flush_nodes(self) -> None:
         self._node_flusher.flush()
