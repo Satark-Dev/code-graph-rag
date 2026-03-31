@@ -75,6 +75,11 @@ async def process_remediation_job_message(*, payload: DownstreamStagePayloadV1, 
             invocation_id=payload.invocation_id,
             repo_path=payload.target_repo_path,
         )
+        logger.info(
+            "Kafka remediation job {} org_id={} completed successfully",
+            invocation,
+            payload.org_id,
+        )
         return True
     except Exception:
         # Persist failure status so repo cleanup does not trigger.
