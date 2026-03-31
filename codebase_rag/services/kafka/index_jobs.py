@@ -13,11 +13,6 @@ def get_index_jobs_topic() -> str:
     return settings.KAFKA_INDEX_JOBS_TOPIC
 
 
-def get_index_job_key(org_id: str, repo_path: str) -> str:
-    """Stable partition key so one org+repo serializes on a single partition."""
-    return f"{org_id.strip()}::{repo_path.strip()}"
-
-
 async def enqueue_index_job(
     *,
     app: FastAPI,
@@ -34,7 +29,9 @@ async def enqueue_index_job(
         exclude=exclude,
     )
     topic = get_index_jobs_topic()
-    key = get_index_job_key(org_id, repo_path)
+    # Use invocation_id as the Kafka message key so all stages for the same
+    # pipeline run stay on the same partition.
+    key = payload.invocation_id
 
     await kafka_service.start()
     await kafka_service.send(topic, value=payload.model_dump(mode="json"), key=key)

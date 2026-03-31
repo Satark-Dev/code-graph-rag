@@ -27,7 +27,7 @@ async def send_index_example() -> None:
     )
 
     topic = get_index_jobs_topic()
-    key = org_id  # simplified key for repo_url compatibility
+    key = invocation_id
 
     logger.info(
         "Sending index job topic={} key={} payload={}",

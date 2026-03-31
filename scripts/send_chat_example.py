@@ -30,7 +30,7 @@ async def send_chat_example() -> None:
     )
 
     topic = get_chat_jobs_topic()
-    key = org_id  # stable partitioning key by org
+    key = invocation_id
 
     logger.info(
         "Sending chat job topic={} key={} payload={}",

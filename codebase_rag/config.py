@@ -283,7 +283,7 @@ class AppConfig(BaseSettings):
     KAFKA_BOOTSTRAP_SERVERS: str = ""
 
     # --- Kafka (stage-separated chat pipeline) ---
-    KAFKA_EVIDENCE_JOBS_TOPIC: str = "cgr.chat.evidence.jobs"
+    KAFKA_EVIDENCE_JOBS_TOPIC: str = "ai.cgr.evidence"
     KAFKA_EVIDENCE_CONSUMER_GROUP_ID: str = "cgr-evidence-jobs"
     KAFKA_EVIDENCE_MAX_CONCURRENCY: int = Field(4, ge=1)
     KAFKA_EVIDENCE_AUTO_OFFSET_RESET: str = "latest"
@@ -294,7 +294,7 @@ class AppConfig(BaseSettings):
     KAFKA_EVIDENCE_TOPIC_NUM_PARTITIONS: int = Field(3, ge=1)
     KAFKA_EVIDENCE_TOPIC_REPLICATION_FACTOR: int = Field(1, ge=1)
 
-    KAFKA_SCORING_JOBS_TOPIC: str = "cgr.chat.scoring.jobs"
+    KAFKA_SCORING_JOBS_TOPIC: str = "ai.cgr.score"
     KAFKA_SCORING_CONSUMER_GROUP_ID: str = "cgr-scoring-jobs"
     KAFKA_SCORING_MAX_CONCURRENCY: int = Field(4, ge=1)
     KAFKA_SCORING_AUTO_OFFSET_RESET: str = "latest"
@@ -305,7 +305,7 @@ class AppConfig(BaseSettings):
     KAFKA_SCORING_TOPIC_NUM_PARTITIONS: int = Field(3, ge=1)
     KAFKA_SCORING_TOPIC_REPLICATION_FACTOR: int = Field(1, ge=1)
 
-    KAFKA_REMEDIATION_JOBS_TOPIC: str = "cgr.chat.remediation.jobs"
+    KAFKA_REMEDIATION_JOBS_TOPIC: str = "ai.cgr.remediation"
     KAFKA_REMEDIATION_CONSUMER_GROUP_ID: str = "cgr-remediation-jobs"
     KAFKA_REMEDIATION_MAX_CONCURRENCY: int = Field(4, ge=1)
     KAFKA_REMEDIATION_AUTO_OFFSET_RESET: str = "latest"
@@ -318,7 +318,7 @@ class AppConfig(BaseSettings):
 
     # --- Kafka (index job consumer) ---
     KAFKA_OBSERVABILITY_TOPIC: str = "queue.ai.invocation.logs"
-    KAFKA_INDEX_JOBS_TOPIC: str = "cgr.index.jobs"
+    KAFKA_INDEX_JOBS_TOPIC: str = "ai.cgr.index"
     KAFKA_INDEX_CONSUMER_GROUP_ID: str = "cgr-index-jobs"
     KAFKA_INDEX_MAX_CONCURRENCY: int = Field(2, ge=1)
     KAFKA_INDEX_AUTO_OFFSET_RESET: str = "latest"

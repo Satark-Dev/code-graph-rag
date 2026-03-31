@@ -19,6 +19,11 @@ def main() -> None:
     Usage:
         python -m scripts.monitor_kafka
     """
+    markdown_only = os.getenv("CGR_MONITOR_MARKDOWN_ONLY", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     bootstrap = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
     try:
         consumer = KafkaConsumer(
@@ -39,6 +44,17 @@ def main() -> None:
             print("-" * 80)
             print(f"topic={msg.topic} partition={msg.partition} offset={msg.offset}")
             try:
+                if markdown_only and isinstance(msg.value, dict):
+                    if msg.value.get("slug") == "ai.message.created":
+                        payload = (
+                            msg.value.get("payload")
+                            if isinstance(msg.value.get("payload"), dict)
+                            else None
+                        )
+                        content = payload.get("message") if payload else None
+                        if isinstance(content, str):
+                            print(content)
+                            continue
                 print(json.dumps(msg.value, indent=2, sort_keys=True))
             except (TypeError, ValueError):
                 # Fallback if message is not json-serializable

@@ -15,11 +15,6 @@ def get_chat_jobs_topic() -> str:
     return settings.KAFKA_EVIDENCE_JOBS_TOPIC
 
 
-def get_chat_job_key(org_id: str) -> str:
-    """Stable partition key: all jobs for one org serialize per partition when keyed."""
-    return org_id.strip()
-
-
 async def enqueue_chat_job(
     *,
     app: FastAPI,
@@ -41,7 +36,8 @@ async def enqueue_chat_job(
         cypher=cypher,
     )
     topic = get_chat_jobs_topic()
-    key = kafka_key or get_chat_job_key(org_id)
+    # Use invocation_id as Kafka key so downstream stages can use the same key.
+    key = kafka_key or inv
 
     await kafka_service.start()
     await kafka_service.send(topic, value=payload.model_dump(mode="json"), key=key)

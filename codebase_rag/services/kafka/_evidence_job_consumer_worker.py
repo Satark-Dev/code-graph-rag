@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -8,6 +9,7 @@ from loguru import logger
 
 from ...config import settings
 from ...main import update_model_settings
+from ...observability.hook import observability_hook
 from ...request_context import org_id_context
 from ...services.chat_orchestrator import ChatOrchestratorService
 from ...services.index_guard import RepoIndexQueryError, RepoNotIndexedError, assert_repo_indexed
@@ -37,9 +39,13 @@ async def process_evidence_job_message(
     Returns False to leave the offset uncommitted (retry).
     """
     invocation = payload.invocation_id
+    t0 = time.perf_counter()
+    evidence_tool_id: str | None = None
 
     ctx_token = org_id_context.set(payload.org_id)
     try:
+        await observability_hook.before_chat(org_id=payload.org_id, invocation_id=invocation)
+
         branch_name = get_branch_name_for_finding(payload.org_tool_findings_ids[0], payload.org_id)
         if not branch_name or not str(branch_name).strip():
             logger.error(
@@ -89,6 +95,7 @@ async def process_evidence_job_message(
             request_query, target_repo_path, ingestor, run_id=run_id
         )
         evidence_tool_id = str(uuid4())
+        await observability_hook.log_tool_start(tool_name="evidence", tool_call_id=evidence_tool_id)
         evidence_json, evidence_usage, evidence_ms = await ChatOrchestratorService._run_evidence_stage(
             run_id=run_id,
             tool_call_id=evidence_tool_id,
@@ -138,12 +145,12 @@ async def process_evidence_job_message(
         await kafka_service.send(
             settings.KAFKA_SCORING_JOBS_TOPIC,
             value=scoring_payload.model_dump(mode="json"),
-            key=payload.org_id,
+            key=invocation,
         )
         await kafka_service.send(
             settings.KAFKA_REMEDIATION_JOBS_TOPIC,
             value=remediation_payload.model_dump(mode="json"),
-            key=payload.org_id,
+            key=invocation,
         )
 
         logger.info(
@@ -161,6 +168,12 @@ async def process_evidence_job_message(
             payload.org_id,
             e,
         )
+        if evidence_tool_id is not None:
+            await observability_hook.log_tool_failed(
+                tool_name="evidence",
+                tool_call_id=evidence_tool_id,
+                duration_ms=int((time.perf_counter() - t0) * 1000),
+            )
         return False
     except RepoIndexQueryError as e:
         logger.warning(
@@ -169,6 +182,12 @@ async def process_evidence_job_message(
             payload.org_id,
             e,
         )
+        if evidence_tool_id is not None:
+            await observability_hook.log_tool_failed(
+                tool_name="evidence",
+                tool_call_id=evidence_tool_id,
+                duration_ms=int((time.perf_counter() - t0) * 1000),
+            )
         return False
     except ValueError as e:
         logger.warning(
@@ -177,6 +196,12 @@ async def process_evidence_job_message(
             payload.org_id,
             e,
         )
+        if evidence_tool_id is not None:
+            await observability_hook.log_tool_failed(
+                tool_name="evidence",
+                tool_call_id=evidence_tool_id,
+                duration_ms=int((time.perf_counter() - t0) * 1000),
+            )
         return True
     except Exception:
         logger.exception(
@@ -184,6 +209,12 @@ async def process_evidence_job_message(
             invocation,
             payload.org_id,
         )
+        if evidence_tool_id is not None:
+            await observability_hook.log_tool_failed(
+                tool_name="evidence",
+                tool_call_id=evidence_tool_id,
+                duration_ms=int((time.perf_counter() - t0) * 1000),
+            )
         return False
     finally:
         org_id_context.reset(ctx_token)

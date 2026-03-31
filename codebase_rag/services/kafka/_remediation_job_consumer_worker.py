@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from loguru import logger
@@ -27,7 +28,10 @@ def _validate_models_for_payload(payload: DownstreamStagePayloadV1) -> None:
 async def process_remediation_job_message(*, payload: DownstreamStagePayloadV1, ingestor: Any) -> bool:
     invocation = payload.invocation_id
     ctx_token = org_id_context.set(payload.org_id)
+    t0 = time.perf_counter()
     try:
+        await observability_hook.before_chat(org_id=payload.org_id, invocation_id=invocation)
+        await observability_hook.log_tool_start(tool_name="remediation", tool_call_id=payload.tool_call_id)
         _validate_models_for_payload(payload)
 
         evidence_out = fetch_latest_stage_output(run_id=payload.invocation_id, stage="evidence")
@@ -50,6 +54,7 @@ async def process_remediation_job_message(*, payload: DownstreamStagePayloadV1, 
             shared_payload=shared_payload,
             timeout=float(settings.CHAT_REMEDIATION_TIMEOUT_SECONDS),
         )
+        remediation_ms = int((time.perf_counter() - t0) * 1000)
 
         store_tool_call(
             run_id=payload.invocation_id,
@@ -69,8 +74,10 @@ async def process_remediation_job_message(*, payload: DownstreamStagePayloadV1, 
             model_name=settings.active_orchestrator_config.model_id,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            duration_ms=None,
+            duration_ms=remediation_ms,
         )
+        # Mark the end of the full Kafka chat pipeline invocation (evidence + scoring + remediation).
+        await observability_hook.after_chat_success(tool_call_id=payload.invocation_id)
         await maybe_cleanup_repo_after_chat_pipeline(
             invocation_id=payload.invocation_id,
             repo_path=payload.target_repo_path,
@@ -101,6 +108,15 @@ async def process_remediation_job_message(*, payload: DownstreamStagePayloadV1, 
             "Kafka remediation job {} org_id={}: unexpected error (retry)",
             invocation,
             payload.org_id,
+        )
+        await observability_hook.log_tool_failed(
+            tool_name="remediation",
+            tool_call_id=payload.tool_call_id,
+            duration_ms=int((time.perf_counter() - t0) * 1000),
+        )
+        await observability_hook.after_chat_error(
+            RuntimeError("remediation_failed"),
+            tool_call_id=payload.invocation_id,
         )
         return False
     finally:
