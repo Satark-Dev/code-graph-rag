@@ -45,6 +45,9 @@ async def process_evidence_job_message(
     ctx_token = org_id_context.set(payload.org_id)
     try:
         await observability_hook.before_chat(org_id=payload.org_id, invocation_id=invocation)
+        # Wrapper tool so the UI can show a dedicated "scoring agent" invocation
+        # containing evidence + scoring + remediation.
+        await observability_hook.log_tool_start(tool_name="scoring_agent", tool_call_id=invocation)
 
         branch_name = get_branch_name_for_finding(payload.org_tool_findings_ids[0], payload.org_id)
         if not branch_name or not str(branch_name).strip():

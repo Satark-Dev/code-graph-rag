@@ -56,7 +56,7 @@ def test_store_embedding_calls_upsert(
     from codebase_rag.vector_store import store_embedding
 
     node_id = 123
-    embedding = [0.1] * 768
+    embedding = [0.1] * 1536
     qualified_name = "myproject.module.function"
 
     with patch(
@@ -87,7 +87,7 @@ def test_store_embedding_handles_exception(
         "codebase_rag.vector_store.get_pgvector_client",
         return_value=mock_pgvector_client,
     ):
-        store_embedding(123, [0.1] * 768, "test.func")
+        store_embedding(123, [0.1] * 1536, "test.func")
 
 
 @pytest.mark.skipif(not has_pgvector_client(), reason="pgvector-client not installed")
@@ -108,7 +108,7 @@ def test_search_embeddings_calls_query_points(
     mock_result.points = [mock_point1, mock_point2]
     mock_pgvector_client.query_points.return_value = mock_result
 
-    query_embedding = [0.2] * 768
+    query_embedding = [0.2] * 1536
 
     with patch(
         "codebase_rag.vector_store.get_pgvector_client",
@@ -144,7 +144,7 @@ def test_search_embeddings_filters_null_payloads(
         "codebase_rag.vector_store.get_pgvector_client",
         return_value=mock_pgvector_client,
     ):
-        results = search_embeddings([0.2] * 768)
+        results = search_embeddings([0.2] * 1536)
 
     assert results == [(1, 0.95)]
 
@@ -161,7 +161,7 @@ def test_search_embeddings_handles_exception(
         "codebase_rag.vector_store.get_pgvector_client",
         return_value=mock_pgvector_client,
     ):
-        results = search_embeddings([0.2] * 768)
+        results = search_embeddings([0.2] * 1536)
 
     assert results == []
 
@@ -180,10 +180,10 @@ def test_search_embeddings_default_top_k(
         "codebase_rag.vector_store.get_pgvector_client",
         return_value=mock_pgvector_client,
     ):
-        search_embeddings([0.2] * 768)
+        search_embeddings([0.2] * 1536)
 
     mock_pgvector_client.query_points.assert_called_once_with(
-        collection_name="code_embeddings", query=[0.2] * 768, limit=5
+        collection_name="code_embeddings", query=[0.2] * 1536, limit=5
     )
 
 
@@ -230,5 +230,5 @@ def test_upsert_updates_existing(integration_client: Connection) -> None:
 def test_empty_search_returns_empty_list(integration_client: Connection) -> None:
     from codebase_rag.vector_store import search_embeddings
 
-    results = search_embeddings([0.5] * 768, top_k=5)
+    results = search_embeddings([0.5] * 1536, top_k=5)
     assert results == []

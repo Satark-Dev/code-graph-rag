@@ -76,6 +76,12 @@ async def process_remediation_job_message(*, payload: DownstreamStagePayloadV1, 
             output_tokens=output_tokens,
             duration_ms=remediation_ms,
         )
+        # Close the wrapper tool for the full pipeline.
+        await observability_hook.log_tool_completed(
+            tool_name="scoring_agent",
+            tool_call_id=payload.invocation_id,
+            duration_ms=int((time.perf_counter() - t0) * 1000),
+        )
         # Mark the end of the full Kafka chat pipeline invocation (evidence + scoring + remediation).
         await observability_hook.after_chat_success(tool_call_id=payload.invocation_id)
         await release_repo_lease_if_unused(

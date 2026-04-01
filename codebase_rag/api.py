@@ -5,11 +5,61 @@ from typing import Any
 
 from fastapi import FastAPI
 from loguru import logger
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from .bootstrap import connect_memgraph, prewarm_semantic_model, warm_core_db
 from .config import kafka_consumer_reload_guard_allows_start, settings
 from .context import app_context
 from .services.semantic_reranker import aclose_deepinfra_client
+
+
+class ChatRequest(BaseModel):
+    """
+    Backwards-compatible request model (used by tests and older callers).
+    Note: the API process does not expose chat HTTP endpoints; Kafka drives the pipeline.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    org_id: str
+    org_tool_findings_ids: list[str]
+
+    @field_validator("org_id")
+    @classmethod
+    def _org_id_non_blank(cls, value: str) -> str:
+        v = value.strip()
+        if not v:
+            raise ValueError("org_id is required")
+        return v
+
+    @field_validator("org_tool_findings_ids")
+    @classmethod
+    def _findings_non_empty(cls, value: list[str]) -> list[str]:
+        cleaned = [x.strip() for x in value if isinstance(x, str) and x.strip()]
+        if not cleaned:
+            raise ValueError("org_tool_findings_ids must be non-empty")
+        return cleaned
+
+
+class IndexRequest(BaseModel):
+    """
+    Backwards-compatible request model (used by tests and older callers).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    org_id: str
+    repo_path: str
+    clean: bool = True
+    exclude: list[str] | None = None
+
+    @field_validator("org_id")
+    @classmethod
+    def _org_id_non_blank(cls, value: str) -> str:
+        v = value.strip()
+        if not v:
+            raise ValueError("org_id is required")
+        return v
 
 # Configure confirmation prompts in API context based on CLI flag
 app_context.session.confirm_edits = not (os.environ.get("CGR_NO_CONFIRM") == "1")

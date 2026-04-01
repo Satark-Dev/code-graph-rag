@@ -1,6 +1,7 @@
 import asyncio
 import time
 from typing import Any
+from uuid import uuid4
 
 from loguru import logger
 
@@ -130,15 +131,18 @@ async def process_index_job_message(
                 )
                 await kafka_service.start()
                 for fid in all_finding_ids:
+                    # Create a new invocation id for the scoring pipeline (evidence + scoring + remediation)
+                    # so observability can display it as a separate "scoring agent" invocation.
+                    scoring_invocation_id = uuid4().hex
                     evidence_payload = EvidenceJobPayloadV1(
                         org_id=payload.org_id,
                         org_tool_findings_ids=[fid],
-                        invocation_id=invocation,
+                        invocation_id=scoring_invocation_id,
                     )
                     await kafka_service.send(
                         settings.KAFKA_EVIDENCE_JOBS_TOPIC,
                         value=evidence_payload.model_dump(mode="json"),
-                        key=invocation,
+                        key=scoring_invocation_id,
                     )
                 logger.info(
                     "Enqueued {} evidence job(s) topic={} org_id={} invocation_id={}",

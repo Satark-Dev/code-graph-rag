@@ -267,6 +267,11 @@ class AppConfig(BaseSettings):
 
     HF_TOKEN: str | None
 
+    # --- Embeddings (OpenAI) ---
+    EMBEDDINGS_MODEL: str = "text-embedding-3-small"
+    EMBEDDINGS_API_KEY: str | None = None
+    EMBEDDINGS_ENDPOINT: str | None = None
+
     QUIET: bool = Field(..., validation_alias="CGR_QUIET")
 
     MCP_HTTP_HOST: str

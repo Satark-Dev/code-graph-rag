@@ -81,8 +81,8 @@ class TestStoreEmbeddingBatch:
 
         mock_client = MagicMock()
         points = [
-            (1, [0.1] * 768, "mod.func1"),
-            (2, [0.2] * 768, "mod.func2"),
+            (1, [0.1] * 1536, "mod.func1"),
+            (2, [0.2] * 1536, "mod.func2"),
         ]
 
         with patch(_PATCH_CLIENT, return_value=mock_client):
@@ -106,7 +106,7 @@ class TestStoreEmbeddingBatch:
             patch(_PATCH_CLIENT, return_value=mock_client),
             patch(_PATCH_SLEEP),
         ):
-            result = store_embedding_batch([(1, [0.1] * 768, "mod.func")])
+            result = store_embedding_batch([(1, [0.1] * 1536, "mod.func")])
 
         assert result == 0
 
@@ -114,7 +114,7 @@ class TestStoreEmbeddingBatch:
         from codebase_rag.vector_store import store_embedding_batch
 
         mock_client = MagicMock()
-        embedding = [0.5] * 768
+        embedding = [0.5] * 1536
         points = [(42, embedding, "pkg.module.fn")]
 
         with patch(_PATCH_CLIENT, return_value=mock_client):

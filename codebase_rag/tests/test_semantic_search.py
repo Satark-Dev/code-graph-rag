@@ -12,7 +12,7 @@ pytestmark = [pytest.mark.anyio]
 @pytest.fixture
 def mock_embed_code() -> MagicMock:
     mock = MagicMock()
-    mock.return_value = [0.1] * 768
+    mock.return_value = [0.1] * 1536
     return mock
 
 
@@ -133,7 +133,7 @@ def test_semantic_code_search_passes_top_k_to_search(
     ):
         semantic_code_search("file handling", top_k=10)
 
-    mock_search_embeddings.assert_called_once_with([0.1] * 768, top_k=10)
+    mock_search_embeddings.assert_called_once_with([0.1] * 1536, top_k=10)
 
 
 @pytest.mark.skipif(
@@ -163,7 +163,7 @@ def test_semantic_code_search_overfetches_when_rerank_enabled(
     ):
         semantic_code_search("file handling", top_k=10)
 
-    mock_search_embeddings.assert_called_once_with([0.1] * 768, top_k=20)
+    mock_search_embeddings.assert_called_once_with([0.1] * 1536, top_k=20)
 
 
 @pytest.mark.skipif(

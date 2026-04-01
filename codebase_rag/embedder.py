@@ -2,16 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-from functools import lru_cache
 from pathlib import Path
 
 from loguru import logger
 
 from . import constants as cs
-from . import exceptions as ex
 from . import logs as ls
 from .config import settings
-from .utils.dependencies import has_torch, has_transformers
+from .utils.dependencies import has_pgvector
 
 
 class EmbeddingCache:
@@ -94,105 +92,86 @@ def clear_embedding_cache() -> None:
         _embedding_cache = None
 
 
-if has_torch() and has_transformers():
-    import numpy as np
-    import torch
-    from numpy.typing import NDArray
+def _truncate(s: str, max_length: int | None) -> str:
+    if max_length is None:
+        return s
+    ml = int(max_length)
+    if ml <= 0:
+        return s
+    return s[:ml]
 
-    from .unixcoder import UniXcoder
 
-    if not settings.HF_TOKEN:
-        # (H) Avoid noisy HF warnings by setting an explicit empty token if unset.
-        import os
+def _openai_client():
+    from openai import OpenAI
 
-        os.environ.setdefault("HF_TOKEN", "")
+    api_key = settings.EMBEDDINGS_API_KEY or settings.ORCHESTRATOR_API_KEY or settings.CYPHER_API_KEY
+    if not api_key:
+        raise ValueError(
+            "Missing OpenAI API key for embeddings. Set EMBEDDINGS_API_KEY or ORCHESTRATOR_API_KEY in .env."
+        )
+    base_url = settings.EMBEDDINGS_ENDPOINT or settings.ORCHESTRATOR_ENDPOINT or cs.OPENAI_DEFAULT_ENDPOINT
+    return OpenAI(api_key=api_key, base_url=base_url)
 
-    @lru_cache(maxsize=1)
-    def get_model() -> UniXcoder:
-        model = UniXcoder(cs.UNIXCODER_MODEL)
-        model.eval()
-        if torch.cuda.is_available():
-            model = model.cuda()
-        return model
 
-    def embed_code(code: str, max_length: int | None = None) -> list[float]:
-        cache = get_embedding_cache()
-        if (cached := cache.get(code)) is not None:
-            return cached
+def embed_code(code: str, max_length: int | None = None) -> list[float]:
+    if not has_pgvector():
+        raise RuntimeError(
+            "Semantic search requires 'semantic' extra: uv sync --extra semantic"
+        )
 
-        if max_length is None:
-            max_length = settings.EMBEDDING_MAX_LENGTH
-        model = get_model()
-        device = next(model.parameters()).device
-        tokens = model.tokenize([code], max_length=max_length)
-        tokens_tensor = torch.tensor(tokens).to(device)
-        with torch.no_grad():
-            _, sentence_embeddings = model(tokens_tensor)
-            embedding: NDArray[np.float32] = sentence_embeddings.cpu().numpy()
-        result: list[float] = embedding[0].tolist()
+    cache = get_embedding_cache()
+    if (cached := cache.get(code)) is not None:
+        return cached
 
-        cache.put(code, result)
-        return result
+    client = _openai_client()
+    snippet = _truncate(code, max_length or settings.EMBEDDING_MAX_LENGTH)
+    resp = client.embeddings.create(model=settings.EMBEDDINGS_MODEL, input=snippet)
+    embedding = list(resp.data[0].embedding)
+    cache.put(code, embedding)
+    return embedding
 
-    def embed_code_batch(
-        snippets: list[str],
-        max_length: int | None = None,
-        batch_size: int = cs.EMBEDDING_DEFAULT_BATCH_SIZE,
-    ) -> list[list[float]]:
-        if not snippets:
-            return []
 
-        if max_length is None:
-            max_length = settings.EMBEDDING_MAX_LENGTH
+def embed_code_batch(
+    snippets: list[str],
+    max_length: int | None = None,
+    batch_size: int = cs.EMBEDDING_DEFAULT_BATCH_SIZE,
+) -> list[list[float]]:
+    if not has_pgvector():
+        raise RuntimeError(
+            "Semantic search requires 'semantic' extra: uv sync --extra semantic"
+        )
 
-        cache = get_embedding_cache()
-        cached_results = cache.get_many(snippets)
+    if not snippets:
+        return []
 
-        if len(cached_results) == len(snippets):
-            logger.debug(ls.EMBEDDING_CACHE_HIT, count=len(snippets))
-            return [cached_results[i] for i in range(len(snippets))]
+    cache = get_embedding_cache()
+    cached_results = cache.get_many(snippets)
+    if len(cached_results) == len(snippets):
+        logger.debug(ls.EMBEDDING_CACHE_HIT, count=len(snippets))
+        return [cached_results[i] for i in range(len(snippets))]
 
-        uncached_indices = [i for i in range(len(snippets)) if i not in cached_results]
-        uncached_snippets = [snippets[i] for i in uncached_indices]
+    ml = max_length or settings.EMBEDDING_MAX_LENGTH
+    uncached_indices = [i for i in range(len(snippets)) if i not in cached_results]
+    uncached_snippets = [_truncate(snippets[i], ml) for i in uncached_indices]
 
-        model = get_model()
-        device = next(model.parameters()).device
+    client = _openai_client()
+    all_new_embeddings: list[list[float]] = []
+    for start in range(0, len(uncached_snippets), int(batch_size)):
+        batch = uncached_snippets[start : start + int(batch_size)]
+        resp = client.embeddings.create(model=settings.EMBEDDINGS_MODEL, input=batch)
+        # API returns data in the same order as inputs
+        all_new_embeddings.extend([list(d.embedding) for d in resp.data])
 
-        all_new_embeddings: list[list[float]] = []
-        for start in range(0, len(uncached_snippets), batch_size):
-            batch = uncached_snippets[start : start + batch_size]
-            tokens_list = model.tokenize(batch, max_length=max_length, padding=True)
-            tokens_tensor = torch.tensor(tokens_list).to(device)
-            with torch.no_grad():
-                _, sentence_embeddings = model(tokens_tensor)
-                batch_np: NDArray[np.float32] = sentence_embeddings.cpu().numpy()
-            for row in batch_np:
-                all_new_embeddings.append(row.tolist())
+    cache.put_many([snippets[i] for i in uncached_indices], all_new_embeddings)
 
-        cache.put_many(uncached_snippets, all_new_embeddings)
+    results: list[list[float]] = [[] for _ in snippets]
+    for i, emb in cached_results.items():
+        results[i] = emb
+    for idx, orig_i in enumerate(uncached_indices):
+        results[orig_i] = all_new_embeddings[idx]
+    return results
 
-        results: list[list[float]] = [[] for _ in snippets]
-        for i, emb in cached_results.items():
-            results[i] = emb
-        for idx, orig_i in enumerate(uncached_indices):
-            results[orig_i] = all_new_embeddings[idx]
 
-        return results
-
-    def prewarm_embeddings() -> None:
-        _ = get_model()
-
-else:
-
-    def embed_code(code: str, max_length: int | None = None) -> list[float]:
-        raise RuntimeError(ex.SEMANTIC_EXTRA)
-
-    def embed_code_batch(
-        snippets: list[str],
-        max_length: int | None = None,
-        batch_size: int = cs.EMBEDDING_DEFAULT_BATCH_SIZE,
-    ) -> list[list[float]]:
-        raise RuntimeError(ex.SEMANTIC_EXTRA)
-
-    def prewarm_embeddings() -> None:
-        raise RuntimeError(ex.SEMANTIC_EXTRA)
+def prewarm_embeddings() -> None:
+    # No local model to prewarm; validate config early.
+    _ = _openai_client()

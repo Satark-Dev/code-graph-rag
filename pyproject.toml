@@ -97,8 +97,6 @@ treesitter-full = [
 semantic = [
     "pgvector>=0.3.2",
     "psycopg[binary]>=3.2.3",
-    "torch>=2.6.0",
-    "transformers>=4.0.0",
 ]
 
 [tool.ruff]

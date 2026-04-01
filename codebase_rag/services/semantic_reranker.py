@@ -10,9 +10,6 @@ from .. import logs as ls
 from ..config import settings
 from ..types_defs import SemanticSearchResult
 
-_DEEPINFRA_CLIENT: httpx.AsyncClient | None = None
-_DEEPINFRA_CLIENT_LOCK = asyncio.Lock()
-
 
 class _DeepInfraRerankResponse(BaseModel):
     scores: list[float] = Field(default_factory=list)
@@ -46,29 +43,18 @@ async def _deepinfra_rerank(
         "Content-Type": "application/json",
     }
 
-    async def _get_client(*, timeout: httpx.Timeout) -> httpx.AsyncClient:
-        global _DEEPINFRA_CLIENT
-        async with _DEEPINFRA_CLIENT_LOCK:
-            if _DEEPINFRA_CLIENT is None or _DEEPINFRA_CLIENT.is_closed:
-                _DEEPINFRA_CLIENT = httpx.AsyncClient(timeout=timeout)
-            else:
-                _DEEPINFRA_CLIENT.timeout = timeout
-            return _DEEPINFRA_CLIENT
-
     try:
         timeout = httpx.Timeout(float(settings.DEEPINFRA_TIMEOUT_SECONDS))
         max_retries = max(0, int(settings.DEEPINFRA_MAX_RETRIES))
-        client = await _get_client(timeout=timeout)
-
-        scores = await _execute_rerank_with_retries(
-            client=client,
-            url=url,
-            payload=payload,
-            headers=headers,
-            max_retries=max_retries,
-            candidate_count=len(candidates),
-        )
-        return scores
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            return await _execute_rerank_with_retries(
+                client=client,
+                url=url,
+                payload=payload,
+                headers=headers,
+                max_retries=max_retries,
+                candidate_count=len(candidates),
+            )
     except Exception as e:
         logger.warning(ls.SEMANTIC_RERANK_FAILED.format(error=e))
         return None
@@ -108,14 +94,8 @@ async def _execute_rerank_with_retries(
 
 
 async def aclose_deepinfra_client() -> None:
-    """
-    Optional cleanup hook for app shutdown.
-    """
-    global _DEEPINFRA_CLIENT
-    async with _DEEPINFRA_CLIENT_LOCK:
-        if _DEEPINFRA_CLIENT is not None and not _DEEPINFRA_CLIENT.is_closed:
-            await _DEEPINFRA_CLIENT.aclose()
-        _DEEPINFRA_CLIENT = None
+    # No-op: DeepInfra client is not cached globally anymore.
+    return None
 
 
 async def rerank_semantic_results(

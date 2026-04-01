@@ -9,7 +9,7 @@ from codebase_rag.parser_loader import load_parsers
 from codebase_rag.services.graph_service import MemgraphIngestor
 from codebase_rag.types_defs import ResultRow
 
-MOCK_EMBEDDING = [0.1] * 768
+MOCK_EMBEDDING = [0.1] * 1536
 
 _PATCH_DEPS = patch(
     "codebase_rag.graph_updater.has_semantic_dependencies", return_value=True

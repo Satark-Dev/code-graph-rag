@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import contextvars
 import json
+import threading
 import time
 from dataclasses import dataclass
+from decimal import Decimal
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -29,6 +31,82 @@ class HookContext:
 _hook_context: contextvars.ContextVar[HookContext | None] = contextvars.ContextVar(
     "_hook_context", default=None
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _ModelPricing:
+    input_token_cost: Decimal
+    output_token_cost: Decimal
+    cached_token_cost: Decimal
+    currency: str
+
+
+_PRICING_CACHE_LOCK = threading.Lock()
+_PRICING_CACHE: dict[str, _ModelPricing] = {}
+
+
+def _load_model_pricing_from_core_db(model_slug: str) -> _ModelPricing | None:
+    """
+    Best-effort pricing lookup from Core DB `public.model_pricing` by `model_slug`.
+
+    Table stores per-token costs; observability expects per-1M-token prices.
+    """
+    slug = str(model_slug or "").strip()
+    if not slug:
+        return None
+
+    with _PRICING_CACHE_LOCK:
+        cached = _PRICING_CACHE.get(slug)
+        if cached is not None:
+            return cached
+
+    try:
+        import psycopg
+    except Exception:
+        return None
+
+    try:
+        from ..utils.org_region_resolver import get_org_region_resolver
+
+        dsn = get_org_region_resolver().core_db_dsn
+        conn = psycopg.connect(dsn, connect_timeout=float(settings.DB_CONNECT_TIMEOUT))
+    except Exception:
+        return None
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT input_token_cost, output_token_cost, cached_token_cost, currency
+                FROM public.model_pricing
+                WHERE enabled = true AND model_slug = %s
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (slug,),
+            )
+            row = cur.fetchone()
+        if not row:
+            return None
+
+        pricing = _ModelPricing(
+            input_token_cost=Decimal(str(row[0])),
+            output_token_cost=Decimal(str(row[1])),
+            cached_token_cost=Decimal(str(row[2])),
+            currency=str(row[3] or "USD"),
+        )
+        with _PRICING_CACHE_LOCK:
+            _PRICING_CACHE[slug] = pricing
+        return pricing
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _per_1m(cost_per_token: Decimal) -> float:
+    return float(cost_per_token * Decimal("1000000"))
 
 
 class KafkaObservabilityHook:
@@ -122,6 +200,7 @@ class KafkaObservabilityHook:
             if isinstance(event, AIToolUsage):
                 # Wrap tool usage in a slug/payload envelope with basic pricing metadata.
                 model = event.model_name
+                pricing = _load_model_pricing_from_core_db(model)
                 to_send = {
                     "slug": "ai.tool.usage",
                     "payload": {
@@ -131,11 +210,16 @@ class KafkaObservabilityHook:
                         "toolName": event.tool_name,
                         "usageDetails": {
                             "price": {
-                                # Pricing is not known here; emit zeros and the model id.
-                                "inputPricePer1MTokens": 0.0,
-                                "cachedInputPricePer1MTokens": 0.0,
-                                "outputPricePer1MTokens": 0.0,
-                                "currency": "USD",
+                                "inputPricePer1MTokens": (
+                                    _per_1m(pricing.input_token_cost) if pricing else 0.0
+                                ),
+                                "cachedInputPricePer1MTokens": (
+                                    _per_1m(pricing.cached_token_cost) if pricing else 0.0
+                                ),
+                                "outputPricePer1MTokens": (
+                                    _per_1m(pricing.output_token_cost) if pricing else 0.0
+                                ),
+                                "currency": (pricing.currency if pricing else "USD"),
                                 "usedModel": model,
                             },
                             "usage": {
