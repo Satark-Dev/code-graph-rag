@@ -13,7 +13,7 @@ async def send_chat_example() -> None:
     """Send a single example chat job to Kafka for end-to-end testing.
 
     This only publishes to the chat topic; it does not enqueue an index job or clone repos.
-    If you use ``cgr serve`` with embedded Kafka, run with ``--no-kafka-index-consumer`` (or
+    If you use ``cgr consumers`` with embedded Kafka, run with ``--no-kafka-index-consumer`` (or
     ``CGR_EMBEDDED_KAFKA_INDEX_CONSUMERS=0``) when you only want the chat worker and have
     already indexed via a separate index worker or an earlier run.
     """

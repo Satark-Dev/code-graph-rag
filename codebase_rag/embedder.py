@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from pathlib import Path
+from uuid import uuid4
 
 from loguru import logger
 
@@ -10,6 +12,7 @@ from . import constants as cs
 from . import logs as ls
 from .config import settings
 from .utils.dependencies import has_pgvector
+from .utils.token_utils import count_tokens
 
 
 class EmbeddingCache:
@@ -70,26 +73,32 @@ class EmbeddingCache:
         return len(self._cache)
 
 
-_embedding_cache: EmbeddingCache | None = None
+_embedding_cache_by_base: dict[Path, EmbeddingCache] = {}
 
 
 def get_embedding_cache(repo_path: Path | None = None) -> EmbeddingCache:
-    global _embedding_cache
-    if _embedding_cache is None:
-        # (H) Use the provided repo_path, or fall back to current directory for CLI/local use.
-        # Deprecated settings.TARGET_REPO_PATH is no longer used.
-        base_path = repo_path or Path.cwd()
+    # Use the provided repo_path, or fall back to current directory for CLI/local use.
+    # Deprecated settings.TARGET_REPO_PATH is no longer used.
+    base_path = (repo_path or Path.cwd()).resolve()
+    if base_path not in _embedding_cache_by_base:
         cache_path = base_path / cs.EMBEDDING_CACHE_FILENAME
-        _embedding_cache = EmbeddingCache(path=cache_path)
-        _embedding_cache.load()
-    return _embedding_cache
+        cache = EmbeddingCache(path=cache_path)
+        cache.load()
+        _embedding_cache_by_base[base_path] = cache
+    return _embedding_cache_by_base[base_path]
 
 
-def clear_embedding_cache() -> None:
-    global _embedding_cache
-    if _embedding_cache is not None:
-        _embedding_cache.clear()
-        _embedding_cache = None
+def clear_embedding_cache(repo_path: Path | None = None) -> None:
+    """
+    Clears the in-memory embedding cache.
+
+    If repo_path is provided, only clears that repo's cache; otherwise clears all caches.
+    """
+    if repo_path is None:
+        _embedding_cache_by_base.clear()
+        return
+    base_path = repo_path.resolve()
+    _embedding_cache_by_base.pop(base_path, None)
 
 
 def _truncate(s: str, max_length: int | None) -> str:
@@ -101,25 +110,84 @@ def _truncate(s: str, max_length: int | None) -> str:
     return s[:ml]
 
 
-def _openai_client():
-    from openai import OpenAI
-
-    api_key = settings.EMBEDDINGS_API_KEY or settings.ORCHESTRATOR_API_KEY or settings.CYPHER_API_KEY
-    if not api_key:
-        raise ValueError(
-            "Missing OpenAI API key for embeddings. Set EMBEDDINGS_API_KEY or ORCHESTRATOR_API_KEY in .env."
-        )
-    base_url = settings.EMBEDDINGS_ENDPOINT or settings.ORCHESTRATOR_ENDPOINT or cs.OPENAI_DEFAULT_ENDPOINT
-    return OpenAI(api_key=api_key, base_url=base_url)
-
-
-def embed_code(code: str, max_length: int | None = None) -> list[float]:
+def _require_semantic_enabled() -> None:
     if not has_pgvector():
         raise RuntimeError(
             "Semantic search requires 'semantic' extra: uv sync --extra semantic"
         )
 
-    cache = get_embedding_cache()
+
+def _resolve_openai_embeddings_client_config() -> tuple[str, str]:
+    """
+    Resolve API key + base_url for embeddings requests.
+
+    Precedence:
+    - api_key: EMBEDDINGS_API_KEY, then ORCHESTRATOR_API_KEY, then CYPHER_API_KEY
+    - base_url: EMBEDDINGS_ENDPOINT, then ORCHESTRATOR_ENDPOINT, then OPENAI_DEFAULT_ENDPOINT
+    """
+    api_key = (
+        (settings.EMBEDDINGS_API_KEY or "").strip()
+        or (settings.ORCHESTRATOR_API_KEY or "").strip()
+        or (settings.CYPHER_API_KEY or "").strip()
+    )
+    if not api_key:
+        raise ValueError(
+            "Missing API key for embeddings. Set EMBEDDINGS_API_KEY (preferred) "
+            "or ORCHESTRATOR_API_KEY (fallback) in .env."
+        )
+
+    base_url = (
+        (settings.EMBEDDINGS_ENDPOINT or "").strip()
+        or (settings.ORCHESTRATOR_ENDPOINT or "").strip()
+        or cs.OPENAI_DEFAULT_ENDPOINT
+    )
+    return api_key, base_url
+
+
+def _openai_client():
+    from openai import OpenAI
+
+    api_key, base_url = _resolve_openai_embeddings_client_config()
+    return OpenAI(api_key=api_key, base_url=base_url)
+
+
+def _best_effort_log_embedding_usage(
+    *,
+    tool_call_id: str,
+    input_texts: list[str],
+) -> None:
+    try:
+        from .observability.hook import observability_hook
+
+        input_tokens = sum(count_tokens(t) for t in input_texts)
+        coro = observability_hook.log_tool_usage(
+            tool_name="embeddings",
+            tool_call_id=tool_call_id,
+            model_name=settings.EMBEDDINGS_MODEL,
+            input_tokens=int(input_tokens),
+            output_tokens=0,
+        )
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(coro)
+        except RuntimeError:
+            asyncio.run(coro)
+    except (ImportError, RuntimeError, ValueError) as e:
+        logger.debug("Observability embeddings usage log skipped: {}", e)
+    except Exception as e:
+        logger.debug("Observability embeddings usage log failed: {}", e)
+
+
+def embed_code(
+    code: str,
+    max_length: int | None = None,
+    *,
+    repo_path: Path | None = None,
+    cache: EmbeddingCache | None = None,
+) -> list[float]:
+    _require_semantic_enabled()
+
+    cache = cache or get_embedding_cache(repo_path=repo_path)
     if (cached := cache.get(code)) is not None:
         return cached
 
@@ -128,6 +196,11 @@ def embed_code(code: str, max_length: int | None = None) -> list[float]:
     resp = client.embeddings.create(model=settings.EMBEDDINGS_MODEL, input=snippet)
     embedding = list(resp.data[0].embedding)
     cache.put(code, embedding)
+
+    _best_effort_log_embedding_usage(
+        tool_call_id=f"emb_{uuid4().hex}",
+        input_texts=[snippet],
+    )
     return embedding
 
 
@@ -135,16 +208,16 @@ def embed_code_batch(
     snippets: list[str],
     max_length: int | None = None,
     batch_size: int = cs.EMBEDDING_DEFAULT_BATCH_SIZE,
+    *,
+    repo_path: Path | None = None,
+    cache: EmbeddingCache | None = None,
 ) -> list[list[float]]:
-    if not has_pgvector():
-        raise RuntimeError(
-            "Semantic search requires 'semantic' extra: uv sync --extra semantic"
-        )
+    _require_semantic_enabled()
 
     if not snippets:
         return []
 
-    cache = get_embedding_cache()
+    cache = cache or get_embedding_cache(repo_path=repo_path)
     cached_results = cache.get_many(snippets)
     if len(cached_results) == len(snippets):
         logger.debug(ls.EMBEDDING_CACHE_HIT, count=len(snippets))
@@ -163,6 +236,10 @@ def embed_code_batch(
         all_new_embeddings.extend([list(d.embedding) for d in resp.data])
 
     cache.put_many([snippets[i] for i in uncached_indices], all_new_embeddings)
+    _best_effort_log_embedding_usage(
+        tool_call_id=f"emb_batch_{uuid4().hex}",
+        input_texts=uncached_snippets,
+    )
 
     results: list[list[float]] = [[] for _ in snippets]
     for i, emb in cached_results.items():

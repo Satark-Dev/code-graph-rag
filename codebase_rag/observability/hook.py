@@ -237,11 +237,17 @@ class KafkaObservabilityHook:
                     event.timestamp_ms / 1000.0, tz=UTC
                 ).isoformat()
                 actor = event.actor
-                meta_type = "message"
+                # Frontend uses metadata.type for message coloring.
+                # Normalize to a small, stable enum: input | output | prompt.
+                meta_type = "output"
                 if isinstance(actor, str):
                     a = actor.strip().lower()
-                    if a in ("system prompt", "user prompt"):
+                    if a == "system prompt":
                         meta_type = "prompt"
+                    elif a in ("user prompt", "user"):
+                        meta_type = "input"
+                    elif a.startswith("assistant"):
+                        meta_type = "output"
                 to_send = {
                     "slug": "ai.message.created",
                     "payload": {

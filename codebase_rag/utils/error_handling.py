@@ -14,6 +14,35 @@ def log_optional_warning(label: str, error: Exception) -> None:
     logger.warning(f"{label} failed: {error}")
 
 
+def log_and_fallback(
+    *,
+    label: str,
+    error: Exception,
+    default: T,
+    level: str = "warning",
+    include_traceback: bool = False,
+) -> T:
+    """
+    Standardized non-fatal error handler.
+
+    Use when a subsystem failure should degrade gracefully (returning a fallback)
+    while still being diagnosable via logs.
+    """
+    log = logger.opt(exception=error) if include_traceback else logger
+    msg = f"{label} failed: {error}"
+
+    match level.lower():
+        case "debug":
+            log.debug(msg)
+        case "info":
+            log.info(msg)
+        case "error":
+            log.error(msg)
+        case _:
+            log.warning(msg)
+    return default
+
+
 @contextmanager
 def optional_section(label: str) -> None:
     """

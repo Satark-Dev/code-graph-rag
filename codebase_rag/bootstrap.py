@@ -248,7 +248,10 @@ def initialize_services_and_agent(
     shell_command_tool = create_shell_command_tool(shell_commander)
     directory_lister_tool = create_directory_lister_tool(directory_lister)
     document_analyzer_tool = create_document_analyzer_tool(document_analyzer)
-    semantic_search_tool = create_semantic_search_tool(ingestor=ingestor)
+    semantic_search_tool = create_semantic_search_tool(
+        ingestor=ingestor,
+        repo_path=Path(repo_key),
+    )
     function_source_tool = create_get_function_source_tool(ingestor=ingestor)
 
     confirmation_tool_names = ConfirmationToolNames(

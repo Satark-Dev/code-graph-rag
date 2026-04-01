@@ -11,7 +11,7 @@ class CLICommandName(StrEnum):
     LANGUAGE = "language"
     DOCTOR = "doctor"
     STATS = "stats"
-    SERVE = "serve"
+    CONSUMERS = "consumers"
 
 
 APP_DESCRIPTION = (
@@ -29,9 +29,9 @@ CMD_GRAPH_LOADER = "Load and display summary of exported graph JSON"
 CMD_LANGUAGE = "Manage language grammars (add, remove, list)"
 CMD_DOCTOR = "Verify that all dependencies and configurations are properly set up"
 CMD_STATS = "Display node and relationship statistics for the indexed graph"
-CMD_SERVE = (
-    "Start the FastAPI application for Q&A on codebase "
-    "(when KAFKA_BOOTSTRAP_SERVERS is set, also runs embedded Kafka index and/or chat consumers)"
+CMD_CONSUMERS = (
+    "Run embedded Kafka consumers only (no HTTP server). "
+    "Uses the FastAPI lifespan to start index/chat consumers and the Kafka producer."
 )
 HELP_NO_EMBEDDED_KAFKA_CONSUMERS = (
     "Do not start embedded Kafka index/chat job consumers inside this process "
@@ -135,5 +135,5 @@ CLI_COMMANDS: dict[CLICommandName, str] = {
     CLICommandName.LANGUAGE: CMD_LANGUAGE,
     CLICommandName.DOCTOR: CMD_DOCTOR,
     CLICommandName.STATS: CMD_STATS,
-    CLICommandName.SERVE: CMD_SERVE,
+    CLICommandName.CONSUMERS: CMD_CONSUMERS,
 }

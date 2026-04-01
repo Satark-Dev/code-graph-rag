@@ -68,8 +68,8 @@ class EmbeddingGenerator:
                 verify_stored_ids,
             )
 
-            # Ensure we start with a clean global cache state for this repository.
-            clear_embedding_cache()
+            # Ensure we start with a clean embedding cache state for this repository.
+            clear_embedding_cache(self.repo_path)
             get_embedding_cache(self.repo_path)
 
             logger.info(ls.PASS_4_EMBEDDINGS)
@@ -145,7 +145,7 @@ class EmbeddingGenerator:
 
             self._reconcile_embeddings(expected_ids, verify_stored_ids)
 
-            get_embedding_cache().save()
+            get_embedding_cache(self.repo_path).save()
             close_pgvector_client()
 
         except (AttributeError, ValueError, OSError, RuntimeError) as e:
@@ -174,6 +174,7 @@ class EmbeddingGenerator:
                 snippets,
                 max_length=settings.EMBEDDING_MAX_LENGTH,
                 batch_size=embedding_batch_size,
+                repo_path=self.repo_path,
             )
         except (ValueError, RuntimeError) as e:
             logger.warning(ls.EMBEDDING_FAILED, name="batch", error=e)
@@ -181,7 +182,11 @@ class EmbeddingGenerator:
             for _, qn, snippet in pending:
                 try:
                     embeddings.append(
-                        embed_code(snippet, max_length=settings.EMBEDDING_MAX_LENGTH)
+                        embed_code(
+                            snippet,
+                            max_length=settings.EMBEDDING_MAX_LENGTH,
+                            repo_path=self.repo_path,
+                        )
                     )
                 except (ValueError, RuntimeError) as embed_err:
                     logger.warning(ls.EMBEDDING_FAILED, name=qn, error=embed_err)

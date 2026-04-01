@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from contextlib import contextmanager
+from pathlib import Path
 
 from loguru import logger
 from pydantic_ai import Tool
@@ -44,8 +45,14 @@ def _maybe_owned_ingestor(ingestor: QueryProtocol | None):
 class SemanticSearchService:
     """Core semantic code search implementation (search + rerank)."""
 
-    def __init__(self, ingestor: QueryProtocol | None = None) -> None:
+    def __init__(
+        self,
+        ingestor: QueryProtocol | None = None,
+        *,
+        repo_path: Path | None = None,
+    ) -> None:
         self._ingestor = ingestor
+        self._repo_path = repo_path
 
     async def search(
         self,
@@ -62,7 +69,7 @@ class SemanticSearchService:
             from ..services.semantic_reranker import rerank_semantic_results
             from ..vector_store import search_embeddings
 
-            query_embedding = embed_code(query)
+            query_embedding = embed_code(query, repo_path=self._repo_path)
 
             candidate_k = top_k
             if settings.SEMANTIC_RERANK_ENABLED:
@@ -140,17 +147,26 @@ class SemanticSearchService:
             return formatted_results[:top_k]
 
         except Exception as e:  # noqa: BLE001
-            logger.error(ls.SEMANTIC_FAILED.format(query=query, error=e))
-            return []
+            from ..utils.error_handling import log_and_fallback
+
+            return log_and_fallback(
+                label=f"Semantic search (query={query!r})",
+                error=e,
+                default=[],
+                level="error",
+                include_traceback=False,
+            )
 
 
 async def semantic_code_search_async(
     query: str,
     top_k: int = 5,
     ingestor: QueryProtocol | None = None,
+    *,
+    repo_path: Path | None = None,
 ) -> list[SemanticSearchResult]:
     """Async‑first API that delegates to SemanticSearchService."""
-    service = SemanticSearchService(ingestor=ingestor)
+    service = SemanticSearchService(ingestor=ingestor, repo_path=repo_path)
     return await service.search(query, top_k=top_k)
 
 
@@ -158,6 +174,8 @@ def semantic_code_search(
     query: str,
     top_k: int = 5,
     ingestor: QueryProtocol | None = None,
+    *,
+    repo_path: Path | None = None,
 ) -> list[SemanticSearchResult]:
     """
     Sync wrapper for semantic search (and optional rerank).
@@ -176,6 +194,7 @@ def semantic_code_search(
                 query,
                 top_k,
                 ingestor=ingestor,
+                repo_path=repo_path,
             )
         )
 
@@ -215,7 +234,11 @@ def get_function_source_code(
         return None
 
 
-def create_semantic_search_tool(ingestor: QueryProtocol | None = None) -> Tool:
+def create_semantic_search_tool(
+    ingestor: QueryProtocol | None = None,
+    *,
+    repo_path: Path | None = None,
+) -> Tool:
     """
     Create the agent-facing semantic search tool.
 
@@ -229,7 +252,7 @@ def create_semantic_search_tool(ingestor: QueryProtocol | None = None) -> Tool:
     last_any_ts = 0.0
     last_any_response: str | None = None
 
-    service = SemanticSearchService(ingestor=ingestor)
+    service = SemanticSearchService(ingestor=ingestor, repo_path=repo_path)
 
     async def semantic_search_functions(query: str, top_k: int = 5) -> str:
         from ..config import settings
