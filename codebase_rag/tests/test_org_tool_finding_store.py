@@ -20,7 +20,7 @@ class _FakeCursor:
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(self, exc_type, exc, _tb) -> None:
         return None
 
 

@@ -4,13 +4,14 @@ import asyncio
 import contextlib
 from typing import Any
 
-from fastapi import FastAPI
 from loguru import logger
 
 from ...config import settings
 from .index_job_consumer import run_index_job_consumer
 
 _start_lock = asyncio.Lock()
+_index_task: asyncio.Task[Any] | None = None
+_index_stop_event: asyncio.Event | None = None
 
 
 def _task_running(task: asyncio.Task[Any] | None) -> bool:
@@ -18,7 +19,6 @@ def _task_running(task: asyncio.Task[Any] | None) -> bool:
 
 
 async def start_index_job_consumer_background(
-    app: FastAPI,
     *,
     ingestor: Any,
 ) -> None:
@@ -26,22 +26,19 @@ async def start_index_job_consumer_background(
     Idempotent: one index consumer task per process.
     """
     if not settings.kafka_bootstrap_servers_list():
-        logger.error(
-            "KAFKA_BOOTSTRAP_SERVERS is empty; cannot start index consumer"
-        )
+        logger.error("KAFKA_BOOTSTRAP_SERVERS is empty; cannot start index consumer")
         return
 
     async with _start_lock:
-        existing = getattr(app.state, "index_job_consumer_task", None)
-        if _task_running(existing):
+        global _index_task, _index_stop_event
+        if _task_running(_index_task):
             return
 
-        stop_event = asyncio.Event()
-        app.state.index_job_consumer_stop_event = stop_event
-        app.state.index_job_consumer_task = asyncio.create_task(
+        _index_stop_event = asyncio.Event()
+        _index_task = asyncio.create_task(
             run_index_job_consumer(
                 ingestor=ingestor,
-                stop_event=stop_event,
+                stop_event=_index_stop_event,
                 start_kafka_service_on_start=False,
                 stop_kafka_service_on_exit=False,
             ),
@@ -54,37 +51,26 @@ async def start_index_job_consumer_background(
         )
 
 
-async def ensure_index_job_consumer_started(app: FastAPI) -> None:
-    """On-demand start after enqueue when Kafka is configured."""
-    ingestor = getattr(app.state, "ingestor", None)
-    if ingestor is None:
-        logger.warning("ensure_index_job_consumer_started: no ingestor on app.state")
-        return
-    await start_index_job_consumer_background(app, ingestor=ingestor)
-
-
-async def stop_index_job_consumer_background(app: FastAPI) -> None:
-    stop_event = getattr(app.state, "index_job_consumer_stop_event", None)
-    task = getattr(app.state, "index_job_consumer_task", None)
-    if stop_event is not None:
-        stop_event.set()
-    if task is None:
+async def stop_index_job_consumer_background() -> None:
+    global _index_task, _index_stop_event
+    if _index_stop_event is not None:
+        _index_stop_event.set()
+    if _index_task is None:
         return
     grace = settings.KAFKA_INDEX_SHUTDOWN_GRACE_SECONDS
     try:
-        await asyncio.wait_for(task, timeout=grace)
+        await asyncio.wait_for(_index_task, timeout=grace)
     except TimeoutError:
         logger.warning(
             "Kafka index consumer did not finish within {}s; cancelling",
             grace,
         )
-        task.cancel()
+        _index_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
-            await task
+            await _index_task
     except asyncio.CancelledError:
         raise
     finally:
         async with _start_lock:
-            app.state.index_job_consumer_task = None
-            app.state.index_job_consumer_stop_event = None
-
+            _index_task = None
+            _index_stop_event = None

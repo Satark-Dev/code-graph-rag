@@ -1,65 +1,12 @@
 import asyncio
 import os
-from contextlib import asynccontextmanager
-from typing import Any
 
-from fastapi import FastAPI
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, field_validator
 
 from .bootstrap import connect_memgraph, prewarm_semantic_model, warm_core_db
 from .config import kafka_consumer_reload_guard_allows_start, settings
 from .context import app_context
 from .services.semantic_reranker import aclose_deepinfra_client
-
-
-class ChatRequest(BaseModel):
-    """
-    Backwards-compatible request model (used by tests and older callers).
-    Note: the API process does not expose chat HTTP endpoints; Kafka drives the pipeline.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    org_id: str
-    org_tool_findings_ids: list[str]
-
-    @field_validator("org_id")
-    @classmethod
-    def _org_id_non_blank(cls, value: str) -> str:
-        v = value.strip()
-        if not v:
-            raise ValueError("org_id is required")
-        return v
-
-    @field_validator("org_tool_findings_ids")
-    @classmethod
-    def _findings_non_empty(cls, value: list[str]) -> list[str]:
-        cleaned = [x.strip() for x in value if isinstance(x, str) and x.strip()]
-        if not cleaned:
-            raise ValueError("org_tool_findings_ids must be non-empty")
-        return cleaned
-
-
-class IndexRequest(BaseModel):
-    """
-    Backwards-compatible request model (used by tests and older callers).
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    org_id: str
-    repo_path: str
-    clean: bool = True
-    exclude: list[str] | None = None
-
-    @field_validator("org_id")
-    @classmethod
-    def _org_id_non_blank(cls, value: str) -> str:
-        v = value.strip()
-        if not v:
-            raise ValueError("org_id is required")
-        return v
 
 # Configure confirmation prompts in API context based on CLI flag
 app_context.session.confirm_edits = not (os.environ.get("CGR_NO_CONFIRM") == "1")
@@ -97,7 +44,7 @@ def _embedded_chat_consumer_enabled() -> bool:
     return _env_flag_enabled("CGR_EMBEDDED_KAFKA_CHAT_CONSUMERS")
 
 
-async def _embedded_index_consumer(stop_event: asyncio.Event) -> None:
+async def _run_index_consumer(stop_event: asyncio.Event) -> None:
     from .services.kafka.index_job_consumer import run_index_job_consumer
 
     async with connect_memgraph(settings.resolve_batch_size(None)) as ingestor:
@@ -109,10 +56,10 @@ async def _embedded_index_consumer(stop_event: asyncio.Event) -> None:
         )
 
 
-async def _embedded_chat_consumer(stop_event: asyncio.Event) -> None:
+async def _run_chat_consumers(stop_event: asyncio.Event) -> None:
     from .services.kafka.evidence_job_consumer import run_evidence_job_consumer
-    from .services.kafka.scoring_job_consumer import run_scoring_job_consumer
     from .services.kafka.remediation_job_consumer import run_remediation_job_consumer
+    from .services.kafka.scoring_job_consumer import run_scoring_job_consumer
 
     async with connect_memgraph(settings.resolve_batch_size(None)) as ingestor:
         await asyncio.gather(
@@ -171,54 +118,78 @@ async def _shutdown_clients(kafka_started: bool) -> None:
         logger.warning("DeepInfra client shutdown failed: {}", e)
 
 
-@asynccontextmanager
-async def lifespan(_app: FastAPI):
-    async with connect_memgraph(settings.resolve_batch_size(None)) as ingestor:
-        _app.state.ingestor = ingestor
+def _start_embedded_consumers() -> tuple[
+    asyncio.Event | None, list[asyncio.Task[None]]
+]:
+    start_index = _embedded_index_consumer_enabled()
+    start_chat = _embedded_chat_consumer_enabled()
+    if not (start_index or start_chat):
+        logger.info("Embedded Kafka consumers disabled.")
+        return None, []
 
-        prewarm_semantic_model()
-        warm_core_db()
-        kafka_started = await _start_kafka_producer()
-
-        consumer_stop: asyncio.Event | None = None
-        consumer_tasks: list[asyncio.Task[Any]] = []
-        start_index = _embedded_index_consumer_enabled()
-        start_chat = _embedded_chat_consumer_enabled()
-        if start_index or start_chat:
-            consumer_stop = asyncio.Event()
-            parts: list[str] = []
-            if start_index:
-                parts.append("index")
-                consumer_tasks.append(
-                    asyncio.create_task(_embedded_index_consumer(consumer_stop))
-                )
-            if start_chat:
-                parts.append("chat")
-                consumer_tasks.append(
-                    asyncio.create_task(_embedded_chat_consumer(consumer_stop))
-                )
-            logger.info(
-                "Starting embedded Kafka consumer(s) ({}); disable all with "
-                "CGR_EMBEDDED_KAFKA_CONSUMERS=0 or --no-kafka-consumers; disable only index with "
-                "CGR_EMBEDDED_KAFKA_INDEX_CONSUMERS=0 or --no-kafka-index-consumer.",
-                "+".join(parts),
+    stop_event = asyncio.Event()
+    tasks: list[asyncio.Task[None]] = []
+    if start_index:
+        tasks.append(
+            asyncio.create_task(
+                _run_index_consumer(stop_event),
+                name="cgr-kafka-index-consumer",
             )
+        )
+    if start_chat:
+        tasks.append(
+            asyncio.create_task(
+                _run_chat_consumers(stop_event),
+                name="cgr-kafka-chat-consumers",
+            )
+        )
 
-        try:
-            yield
-        finally:
-            if consumer_stop is not None and consumer_tasks:
-                consumer_stop.set()
-                results = await asyncio.gather(*consumer_tasks, return_exceptions=True)
-                for res in results:
-                    if isinstance(res, BaseException):
-                        logger.warning("Embedded Kafka consumer task ended with: {}", res)
-            await _shutdown_clients(kafka_started)
+    logger.info("Starting embedded Kafka consumer(s)...")
+    return stop_event, tasks
 
 
-app = FastAPI(
-    title="Code Graph RAG API",
-    description="API process (lifespan only; no public HTTP endpoints, work goes via Kafka).",
-    version="1.0.0",
-    lifespan=lifespan,
-)
+async def run_kafka_consumers_forever() -> None:
+    """
+    Kafka-only runner for the API process.
+
+    Starts Kafka producer plus optional embedded index/chat consumer loops.
+    Runs until cancelled (Ctrl+C / SIGTERM).
+    """
+    stop_event = asyncio.Event()
+    await run_kafka_consumers_until(stop_event)
+
+
+async def run_kafka_consumers_until(stop_event: asyncio.Event) -> None:
+    """
+    Kafka-only runner that stops when `stop_event` is set.
+
+    This is the preferred entrypoint for CLI shutdown: it allows a graceful stop
+    (no task cancellation), so Kafka consumers can close cleanly.
+    """
+    prewarm_semantic_model()
+    warm_core_db()
+    kafka_started = await _start_kafka_producer()
+
+    consumer_stop, consumer_tasks = _start_embedded_consumers()
+
+    try:
+        await stop_event.wait()
+    except KeyboardInterrupt:
+        # Allow direct use without external signal wiring.
+        pass
+    finally:
+        if consumer_stop is not None and consumer_tasks:
+            consumer_stop.set()
+            results = await asyncio.gather(*consumer_tasks, return_exceptions=True)
+            for res in results:
+                if isinstance(res, BaseException):
+                    logger.warning("Embedded Kafka consumer task ended with: {}", res)
+        await _shutdown_clients(kafka_started)
+
+
+def main() -> None:
+    asyncio.run(run_kafka_consumers_forever())
+
+
+if __name__ == "__main__":
+    main()

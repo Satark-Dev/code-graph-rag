@@ -2,11 +2,11 @@ import asyncio
 import hashlib
 import json
 import time
-from uuid import uuid4
 from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from loguru import logger
 from pydantic import ValidationError
@@ -24,7 +24,7 @@ from ..prompts import (
 )
 from ..services.llm import create_rag_orchestrator
 from ..utils.token_utils import count_tokens
-from ..utils.tool_call_store import new_run_id, store_tool_call
+from ..utils.tool_call_store import store_tool_call
 
 
 def _compute_repo_state_hash(target_repo_path: str) -> str:

@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from fastapi import FastAPI
 from loguru import logger
 
 from ...config import settings
-from .stage_job_payloads import EvidenceJobPayloadV1
 from .producer import kafka_service
+from .stage_job_payloads import EvidenceJobPayloadV1
 
 
 def get_chat_jobs_topic() -> str:
@@ -28,7 +27,6 @@ def get_chat_job_key(org_id: str, invocation_id: str | None = None) -> str:
 
 async def enqueue_chat_job(
     *,
-    app: FastAPI,
     org_id: str,
     org_tool_findings_ids: list[str],
     invocation_id: str | None = None,

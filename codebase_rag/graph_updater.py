@@ -579,6 +579,18 @@ class GraphUpdater:
             or filepath.suffix.lower() == cs.CSPROJ_SUFFIX
         )
 
+    def _collect_eligible_files(self) -> list[Path]:
+        """
+        Backwards-compatible helper for tests/older call sites.
+
+        The authoritative source of eligible files is `StructureProcessor.identify_structure`.
+        This wrapper ensures a deterministic, sorted list.
+        """
+        if self._single_file is not None:
+            return [self._single_file]
+        files = self.factory.structure_processor.identify_structure(collect_files=True)
+        return sorted(files, key=lambda p: str(p))
+
     def run(self, force: bool = False) -> None:
         self.ingestor.ensure_node_batch(
             cs.NODE_PROJECT, {cs.KEY_NAME: self.project_name}
@@ -587,7 +599,7 @@ class GraphUpdater:
 
         logger.info(ls.PASS_1_STRUCTURE)
         self.eligible_files = (
-            self.factory.structure_processor.identify_structure(collect_files=True)
+            self._collect_eligible_files()
             if self._single_file is None
             else [self._single_file]
         )

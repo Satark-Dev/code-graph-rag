@@ -123,7 +123,7 @@ class TestCleanWithUpdateGraph:
     def test_clean_with_update_deletes_hash_cache(
         self,
         mock_cgrignore: MagicMock,
-        mock_load_parsers: MagicMock,
+        _mock_load_parsers: MagicMock,
         mock_graph_updater: MagicMock,
         mock_memgraph_connect: MagicMock,
         tmp_path: Path,
@@ -149,7 +149,7 @@ class TestCleanWithUpdateGraph:
     def test_clean_with_update_calls_clean_database(
         self,
         mock_cgrignore: MagicMock,
-        mock_load_parsers: MagicMock,
+        _mock_load_parsers: MagicMock,
         mock_graph_updater: MagicMock,
         mock_memgraph_connect: MagicMock,
         tmp_path: Path,
@@ -173,7 +173,7 @@ class TestCleanWithUpdateGraph:
     def test_update_without_clean_preserves_hash_cache(
         self,
         mock_cgrignore: MagicMock,
-        mock_load_parsers: MagicMock,
+        _mock_load_parsers: MagicMock,
         mock_graph_updater: MagicMock,
         mock_memgraph_connect: MagicMock,
         tmp_path: Path,

@@ -13,7 +13,7 @@ from codebase_rag.config import (
     EMPTY_CGRIGNORE,
     load_cgrignore_patterns,
 )
-from codebase_rag.main import prompt_for_unignored_directories
+from codebase_rag.graph_export import prompt_for_unignored_directories
 from codebase_rag.types_defs import CgrignorePatterns
 
 
@@ -142,10 +142,10 @@ class TestNegationSyntax:
 
 
 class TestCgrignoreIntegration:
-    @patch("codebase_rag.main.Prompt.ask")
-    @patch("codebase_rag.main.app_context")
+    @patch("codebase_rag.graph_export.Prompt.ask")
+    @patch("codebase_rag.graph_export.app_context")
     def test_cgrignore_patterns_included_in_candidates(
-        self, mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
+        self, _mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
     ) -> None:
         (tmp_path / ".git").mkdir()
         cgrignore = tmp_path / CGRIGNORE_FILENAME
@@ -158,10 +158,10 @@ class TestCgrignoreIntegration:
         assert "vendor" in result
         assert "custom_cache" in result
 
-    @patch("codebase_rag.main.Prompt.ask")
-    @patch("codebase_rag.main.app_context")
+    @patch("codebase_rag.graph_export.Prompt.ask")
+    @patch("codebase_rag.graph_export.app_context")
     def test_cgrignore_merged_with_cli_excludes(
-        self, mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
+        self, _mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
     ) -> None:
         cgrignore = tmp_path / CGRIGNORE_FILENAME
         cgrignore.write_text(encoding="utf-8", data="from_cgrignore\n")
@@ -172,20 +172,20 @@ class TestCgrignoreIntegration:
         assert "from_cgrignore" in result
         assert "from_cli" in result
 
-    @patch("codebase_rag.main.Prompt.ask")
-    @patch("codebase_rag.main.app_context")
+    @patch("codebase_rag.graph_export.Prompt.ask")
+    @patch("codebase_rag.graph_export.app_context")
     def test_cgrignore_only_returns_without_prompt_when_empty(
-        self, mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
+        self, _mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
     ) -> None:
         result = prompt_for_unignored_directories(tmp_path)
 
         assert result == frozenset()
         mock_ask.assert_not_called()
 
-    @patch("codebase_rag.main.Prompt.ask")
-    @patch("codebase_rag.main.app_context")
+    @patch("codebase_rag.graph_export.Prompt.ask")
+    @patch("codebase_rag.graph_export.app_context")
     def test_cgrignore_alone_triggers_prompt(
-        self, mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
+        self, _mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
     ) -> None:
         cgrignore = tmp_path / CGRIGNORE_FILENAME
         cgrignore.write_text(encoding="utf-8", data="my_custom_dir\n")
@@ -195,10 +195,10 @@ class TestCgrignoreIntegration:
 
         mock_ask.assert_called_once()
 
-    @patch("codebase_rag.main.Prompt.ask")
-    @patch("codebase_rag.main.app_context")
+    @patch("codebase_rag.graph_export.Prompt.ask")
+    @patch("codebase_rag.graph_export.app_context")
     def test_cgrignore_deduplicates_with_detected(
-        self, mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
+        self, _mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
     ) -> None:
         (tmp_path / ".git").mkdir()
         cgrignore = tmp_path / CGRIGNORE_FILENAME
@@ -213,10 +213,10 @@ class TestCgrignoreIntegration:
 
 
 class TestNegationIntegration:
-    @patch("codebase_rag.main.Prompt.ask")
-    @patch("codebase_rag.main.app_context")
+    @patch("codebase_rag.graph_export.Prompt.ask")
+    @patch("codebase_rag.graph_export.app_context")
     def test_unignore_included_when_user_selects_none(
-        self, mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
+        self, _mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
     ) -> None:
         (tmp_path / ".git").mkdir()
         cgrignore = tmp_path / CGRIGNORE_FILENAME
@@ -229,10 +229,10 @@ class TestNegationIntegration:
         assert "custom_exclude" not in result
         assert ".git" not in result
 
-    @patch("codebase_rag.main.Prompt.ask")
-    @patch("codebase_rag.main.app_context")
+    @patch("codebase_rag.graph_export.Prompt.ask")
+    @patch("codebase_rag.graph_export.app_context")
     def test_unignore_merged_with_user_selection(
-        self, mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
+        self, _mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
     ) -> None:
         (tmp_path / ".git").mkdir()
         (tmp_path / "node_modules").mkdir()
@@ -253,10 +253,10 @@ class TestNegationIntegration:
 
         assert result == frozenset({"vendor", "node_modules"})
 
-    @patch("codebase_rag.main.Prompt.ask")
-    @patch("codebase_rag.main.app_context")
+    @patch("codebase_rag.graph_export.Prompt.ask")
+    @patch("codebase_rag.graph_export.app_context")
     def test_unignore_included_when_user_selects_all(
-        self, mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
+        self, _mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
     ) -> None:
         (tmp_path / ".git").mkdir()
         cgrignore = tmp_path / CGRIGNORE_FILENAME
@@ -288,7 +288,7 @@ class TestCgrignoreLoadedWithoutInteractiveSetup:
     def test_start_loads_cgrignore_without_interactive_setup(
         self,
         mock_load_cgrignore: MagicMock,
-        mock_load_parsers: MagicMock,
+        _mock_load_parsers: MagicMock,
         mock_graph_updater: MagicMock,
         mock_memgraph_connect: MagicMock,
         tmp_path: Path,
@@ -318,8 +318,8 @@ class TestCgrignoreLoadedWithoutInteractiveSetup:
     def test_index_loads_cgrignore_without_interactive_setup(
         self,
         mock_load_cgrignore: MagicMock,
-        mock_proto_ingestor: MagicMock,
-        mock_load_parsers: MagicMock,
+        _mock_proto_ingestor: MagicMock,
+        _mock_load_parsers: MagicMock,
         mock_graph_updater: MagicMock,
         tmp_path: Path,
     ) -> None:
@@ -348,7 +348,7 @@ class TestCgrignoreLoadedWithoutInteractiveSetup:
     def test_start_merges_cli_excludes_with_cgrignore(
         self,
         mock_load_cgrignore: MagicMock,
-        mock_load_parsers: MagicMock,
+        _mock_load_parsers: MagicMock,
         mock_graph_updater: MagicMock,
         mock_memgraph_connect: MagicMock,
         tmp_path: Path,
@@ -383,7 +383,7 @@ class TestCgrignoreLoadedWithoutInteractiveSetup:
     def test_start_does_not_prompt_without_interactive_setup(
         self,
         mock_load_cgrignore: MagicMock,
-        mock_load_parsers: MagicMock,
+        _mock_load_parsers: MagicMock,
         mock_graph_updater: MagicMock,
         mock_prompt: MagicMock,
         mock_memgraph_connect: MagicMock,

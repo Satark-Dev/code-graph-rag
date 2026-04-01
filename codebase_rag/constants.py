@@ -263,6 +263,10 @@ CLI_MSG_AUTO_EXCLUDE = (
     "Auto-excluding common directories (venv, node_modules, .git, etc.). "
     "Use --interactive-setup to customize."
 )
+CLI_MSG_HINT_TARGET_REPO = (
+    "Hint: set TARGET_REPO_PATH to your repository path "
+    "(or pass the repo path option for the command you're running)."
+)
 
 UI_DIFF_FILE_HEADER = "[bold cyan]File: {path}[/bold cyan]"
 UI_NEW_FILE_HEADER = "[bold cyan]New file: {path}[/bold cyan]"

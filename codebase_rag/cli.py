@@ -21,7 +21,7 @@ from .main import main_async, main_optimize_async, main_single_query
 from .parser_loader import load_parsers
 from .services.protobuf_service import ProtobufFileIngestor
 from .tools.health_checker import HealthChecker
-from .tools.language import cli as language_cli
+from .tools.language import cli as language_click_app
 from .types_defs import ResultRow
 from .ui import style
 
@@ -539,7 +539,14 @@ def graph_loader_command(
     context_settings={"allow_extra_args": True, "allow_interspersed_args": False},
 )
 def language_command(ctx: typer.Context) -> None:
-    language_cli(ctx.args, standalone_mode=False)
+    try:
+        language_click_app.main(
+            args=list(ctx.args),
+            prog_name=f"{cs.PACKAGE_NAME} {ch.CLICommandName.LANGUAGE}",
+            standalone_mode=False,
+        )
+    except SystemExit as e:
+        raise typer.Exit(e.code) from e
 
 
 @app.command(name=ch.CLICommandName.DOCTOR, help=ch.CMD_DOCTOR)
@@ -713,8 +720,8 @@ def consumers(
         no_kafka_chat_consumer=no_kafka_chat_consumer,
     ).apply()
 
-    # Boot the FastAPI lifespan (starts Kafka producer + embedded consumers) and then block.
-    from .api import app as fastapi_app
+    # Run Kafka-only consumer runner and block.
+    from .api import run_kafka_consumers_until
 
     app_context.console.print(
         style("Starting embedded Kafka consumers (no HTTP server)...", cs.Color.GREEN)
@@ -742,9 +749,14 @@ def consumers(
 
     async def _run() -> None:
         nonlocal stop
-        async with fastapi_app.router.lifespan_context(fastapi_app):
+        import asyncio
+
+        stop_event = asyncio.Event()
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(run_kafka_consumers_until, stop_event)
             while not stop:
-                await anyio.sleep(0.5)
+                await anyio.sleep(0.2)
+            stop_event.set()
 
     anyio.run(_run)
 

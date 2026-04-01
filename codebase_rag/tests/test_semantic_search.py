@@ -233,7 +233,7 @@ async def test_deepinfra_reranker_sorts_by_score() -> None:
         async def __aenter__(self):
             return self
 
-        async def __aexit__(self, exc_type, exc, tb):
+        async def __aexit__(self, exc_type, exc, _tb):
             return False
 
         post = staticmethod(_post)

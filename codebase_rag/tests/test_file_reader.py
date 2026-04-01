@@ -76,7 +76,7 @@ class TestFileReadResult:
 
 class TestReadFile:
     async def test_read_existing_text_file(
-        self, file_reader: FileReader, sample_text_file: Path
+        self, file_reader: FileReader, _sample_text_file: Path
     ) -> None:
         result = await file_reader.read_file("sample.txt")
         assert result.content == "Hello, World!\nLine 2\nLine 3"
@@ -187,7 +187,7 @@ class TestCreateFileReaderTool:
         assert "read" in tool.description.lower()
 
     async def test_tool_function_returns_content(
-        self, file_reader: FileReader, sample_text_file: Path
+        self, file_reader: FileReader, _sample_text_file: Path
     ) -> None:
         tool = create_file_reader_tool(file_reader)
         result = await tool.function(file_path="sample.txt")

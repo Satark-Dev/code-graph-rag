@@ -275,7 +275,7 @@ class TestPromptExcludeDirectories:
     @patch("codebase_rag.main.Prompt.ask")
     @patch("codebase_rag.main.app_context")
     def test_empty_repo_returns_empty(
-        self, mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
+        self, _mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
     ) -> None:
         result = prompt_for_unignored_directories(tmp_path)
         assert result == frozenset()
@@ -284,7 +284,7 @@ class TestPromptExcludeDirectories:
     @patch("codebase_rag.main.Prompt.ask")
     @patch("codebase_rag.main.app_context")
     def test_prompt_all_keeps_everything(
-        self, mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
+        self, _mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
     ) -> None:
         (tmp_path / ".git").mkdir()
         (tmp_path / "node_modules").mkdir()
@@ -298,7 +298,7 @@ class TestPromptExcludeDirectories:
     @patch("codebase_rag.main.Prompt.ask")
     @patch("codebase_rag.main.app_context")
     def test_prompt_none_keeps_nothing(
-        self, mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
+        self, _mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
     ) -> None:
         (tmp_path / ".git").mkdir()
         (tmp_path / "node_modules").mkdir()
@@ -311,7 +311,7 @@ class TestPromptExcludeDirectories:
     @patch("codebase_rag.main.Prompt.ask")
     @patch("codebase_rag.main.app_context")
     def test_prompt_number_keeps_entire_group(
-        self, mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
+        self, _mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
     ) -> None:
         (tmp_path / ".git").mkdir()
         (tmp_path / ".venv").mkdir()
@@ -325,7 +325,7 @@ class TestPromptExcludeDirectories:
     @patch("codebase_rag.main.Prompt.ask")
     @patch("codebase_rag.main.app_context")
     def test_prompt_expand_then_select_from_group(
-        self, mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
+        self, _mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
     ) -> None:
         (tmp_path / "src" / "__pycache__").mkdir(parents=True)
         (tmp_path / "tests" / "__pycache__").mkdir(parents=True)
@@ -342,7 +342,7 @@ class TestPromptExcludeDirectories:
     @patch("codebase_rag.main.Prompt.ask")
     @patch("codebase_rag.main.app_context")
     def test_prompt_with_cli_excludes(
-        self, mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
+        self, _mock_context: MagicMock, mock_ask: MagicMock, tmp_path: Path
     ) -> None:
         (tmp_path / ".git").mkdir()
         cli_excludes = ["custom"]

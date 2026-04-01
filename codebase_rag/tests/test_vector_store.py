@@ -40,8 +40,8 @@ def temp_pgvector_path() -> Generator[Path, None, None]:
 
 @pytest.fixture
 def integration_client(
-    temp_pgvector_path: Path, reset_global_client: None
-    ) -> Generator[Connection, None, None]:
+    _temp_pgvector_path: Path, _reset_global_client: None
+) -> Generator[Connection, None, None]:
     if not has_pgvector_client():
         pytest.skip("pgvector-client not installed")
 
@@ -51,7 +51,7 @@ def integration_client(
 
 @pytest.mark.skipif(not has_pgvector_client(), reason="pgvector-client not installed")
 def test_store_embedding_calls_upsert(
-    mock_pgvector_client: MagicMock, reset_global_client: None
+    mock_pgvector_client: MagicMock, _reset_global_client: None
 ) -> None:
     from codebase_rag.vector_store import store_embedding
 
@@ -77,7 +77,7 @@ def test_store_embedding_calls_upsert(
 
 @pytest.mark.skipif(not has_pgvector_client(), reason="pgvector-client not installed")
 def test_store_embedding_handles_exception(
-    mock_pgvector_client: MagicMock, reset_global_client: None
+    mock_pgvector_client: MagicMock, _reset_global_client: None
 ) -> None:
     from codebase_rag.vector_store import store_embedding
 
@@ -92,7 +92,7 @@ def test_store_embedding_handles_exception(
 
 @pytest.mark.skipif(not has_pgvector_client(), reason="pgvector-client not installed")
 def test_search_embeddings_calls_query_points(
-    mock_pgvector_client: MagicMock, reset_global_client: None
+    mock_pgvector_client: MagicMock, _reset_global_client: None
 ) -> None:
     from codebase_rag.vector_store import search_embeddings
 
@@ -124,7 +124,7 @@ def test_search_embeddings_calls_query_points(
 
 @pytest.mark.skipif(not has_pgvector_client(), reason="pgvector-client not installed")
 def test_search_embeddings_filters_null_payloads(
-    mock_pgvector_client: MagicMock, reset_global_client: None
+    mock_pgvector_client: MagicMock, _reset_global_client: None
 ) -> None:
     from codebase_rag.vector_store import search_embeddings
 
@@ -151,7 +151,7 @@ def test_search_embeddings_filters_null_payloads(
 
 @pytest.mark.skipif(not has_pgvector_client(), reason="pgvector-client not installed")
 def test_search_embeddings_handles_exception(
-    mock_pgvector_client: MagicMock, reset_global_client: None
+    mock_pgvector_client: MagicMock, _reset_global_client: None
 ) -> None:
     from codebase_rag.vector_store import search_embeddings
 
@@ -168,7 +168,7 @@ def test_search_embeddings_handles_exception(
 
 @pytest.mark.skipif(not has_pgvector_client(), reason="pgvector-client not installed")
 def test_search_embeddings_default_top_k(
-    mock_pgvector_client: MagicMock, reset_global_client: None
+    mock_pgvector_client: MagicMock, _reset_global_client: None
 ) -> None:
     from codebase_rag.vector_store import search_embeddings
 
@@ -188,7 +188,7 @@ def test_search_embeddings_default_top_k(
 
 
 @pytest.mark.skipif(not has_pgvector_client(), reason="pgvector-client not installed")
-def test_store_and_search_roundtrip(integration_client: Connection) -> None:
+def test_store_and_search_roundtrip(_integration_client: Connection) -> None:
     from codebase_rag.vector_store import search_embeddings, store_embedding
 
     embedding1 = [1.0] + [0.0] * 767
@@ -209,7 +209,7 @@ def test_store_and_search_roundtrip(integration_client: Connection) -> None:
 
 
 @pytest.mark.skipif(not has_pgvector_client(), reason="pgvector-client not installed")
-def test_upsert_updates_existing(integration_client: Connection) -> None:
+def test_upsert_updates_existing(_integration_client: Connection) -> None:
     from codebase_rag.vector_store import search_embeddings, store_embedding
 
     embedding_v1 = [1.0] + [0.0] * 767
@@ -227,7 +227,7 @@ def test_upsert_updates_existing(integration_client: Connection) -> None:
 
 
 @pytest.mark.skipif(not has_pgvector_client(), reason="pgvector-client not installed")
-def test_empty_search_returns_empty_list(integration_client: Connection) -> None:
+def test_empty_search_returns_empty_list(_integration_client: Connection) -> None:
     from codebase_rag.vector_store import search_embeddings
 
     results = search_embeddings([0.5] * 1536, top_k=5)

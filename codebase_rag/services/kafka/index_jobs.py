@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
 from loguru import logger
 
 from ...config import settings
-from .index_job_consumer_controller import ensure_index_job_consumer_started
 from .index_job_payload import IndexJobPayload
 from .producer import kafka_service
 
@@ -34,7 +32,6 @@ def get_index_job_key(
 
 async def enqueue_index_job(
     *,
-    app: FastAPI,
     org_id: str,
     repo_path: str,
     clean: bool,
@@ -53,8 +50,6 @@ async def enqueue_index_job(
     await kafka_service.start()
     await kafka_service.send(topic, value=payload.model_dump(mode="json"), key=key)
 
-    await ensure_index_job_consumer_started(app)
-
     logger.info(
         "Enqueued index job topic={} org_id={} repo_path={} clean={}",
         topic,
@@ -62,4 +57,3 @@ async def enqueue_index_job(
         repo_path,
         clean,
     )
-

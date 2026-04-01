@@ -68,7 +68,7 @@ def ran_single_file_updater(cpp_single_file: Path, mock_ingestor: MagicMock) -> 
 
 
 def test_single_file_repo_path_produces_graph(
-    ran_single_file_updater: None,
+    _ran_single_file_updater: None,
     mock_ingestor: MagicMock,
 ) -> None:
     functions = get_node_names(mock_ingestor, "Function")
@@ -90,7 +90,7 @@ def test_single_file_repo_path_produces_graph(
 
 
 def test_single_file_repo_path_static_functions(
-    ran_single_file_updater: None,
+    _ran_single_file_updater: None,
     mock_ingestor: MagicMock,
 ) -> None:
     functions = get_node_names(mock_ingestor, "Function")
@@ -105,7 +105,7 @@ def test_single_file_repo_path_static_functions(
 
 
 def test_single_file_repo_path_out_of_class_methods(
-    ran_single_file_updater: None,
+    _ran_single_file_updater: None,
     mock_ingestor: MagicMock,
 ) -> None:
     methods = get_node_names(mock_ingestor, "Method")
