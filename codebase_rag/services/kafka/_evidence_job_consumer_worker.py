@@ -71,7 +71,8 @@ async def process_evidence_job_message(
         target_repo_path = repo_manager.require_existing_local_clone(
             org_id=payload.org_id, branch=branch_name
         )
-        await repo_manager.mark_in_use(repo_path=target_repo_path, invocation_id=invocation)
+        repo_lease_id = str(uuid4())
+        await repo_manager.mark_in_use(repo_path=target_repo_path, lease_id=repo_lease_id)
         await assert_repo_indexed(ingestor=ingestor, target_repo_path=target_repo_path)
         _validate_models_for_payload(payload)
 
@@ -124,6 +125,7 @@ async def process_evidence_job_message(
             repo_state_hash=repo_state_hash,
             target_repo_path=target_repo_path,
             invocation_id=invocation,
+            repo_lease_id=repo_lease_id,
             org_tool_findings_ids=payload.org_tool_findings_ids,
             orchestrator=payload.orchestrator,
             cypher=payload.cypher,
@@ -135,6 +137,7 @@ async def process_evidence_job_message(
             repo_state_hash=repo_state_hash,
             target_repo_path=target_repo_path,
             invocation_id=invocation,
+            repo_lease_id=repo_lease_id,
             org_tool_findings_ids=payload.org_tool_findings_ids,
             orchestrator=payload.orchestrator,
             cypher=payload.cypher,

@@ -73,12 +73,105 @@ def persist_org_tool_finding_scores(
     return updated
 
 
+def get_branch_name_for_index_asset(asset_id: str, org_id: str) -> str | None:
+    """
+    Branch name for Kafka index jobs when the backend sends the **branch asset** row id.
+
+    Expects ``org_tool_findings.id`` for a row with ``type = 'asset'``; returns that row's
+    ``name`` (git branch). No parent / findings walk.
+    """
+    if not has_pgvector():
+        return None
+
+    try:
+        conn = pg_connect(autocommit=True)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT name
+                FROM public.org_tool_findings
+                WHERE id = %s::uuid
+                  AND org_id = %s::uuid
+                  AND type = 'asset'
+                """,
+                (asset_id, org_id),
+            )
+            row = cur.fetchone()
+            if not row or not row[0]:
+                return None
+            return str(row[0]).strip() or None
+    except Exception as e:
+        logger.warning(
+            "Failed to fetch branch name for index asset {} (org={}): {}",
+            asset_id,
+            org_id,
+            e,
+        )
+        return None
+    finally:
+        if "conn" in locals():
+            conn.close()
+
+
+def get_all_child_findings_for_branch_asset(asset_id: str, org_id: str) -> list[str]:
+    """
+    All ``type = 'findings'`` rows whose ``parent_id`` equals the branch asset's ``uid``.
+
+    ``asset_id`` is the index job's org_tool_findings row (``type = 'asset'``).
+    """
+    if not has_pgvector():
+        return []
+
+    try:
+        conn = pg_connect(autocommit=True)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT uid
+                FROM public.org_tool_findings
+                WHERE id = %s::uuid
+                  AND org_id = %s::uuid
+                  AND type = 'asset'
+                """,
+                (asset_id, org_id),
+            )
+            row = cur.fetchone()
+            if not row or row[0] is None:
+                return []
+            asset_uid = row[0]
+
+            cur.execute(
+                """
+                SELECT id::text
+                FROM public.org_tool_findings
+                WHERE org_id = %s::uuid
+                  AND type = 'findings'
+                  AND parent_id = %s
+                ORDER BY created_at ASC, id ASC
+                """,
+                (org_id, asset_uid),
+            )
+            rows = cur.fetchall() or []
+            return [str(r[0]) for r in rows if r and r[0]]
+    except Exception as e:
+        logger.warning(
+            "Failed to fetch child findings for branch asset {} (org {}): {}",
+            asset_id,
+            org_id,
+            e,
+        )
+        return []
+    finally:
+        if "conn" in locals():
+            conn.close()
+
+
 def get_branch_name_for_finding(finding_id: str, org_id: str) -> str | None:
     """
     Retrieves the branch name from the 'name' column by:
     1. Finding the finding with type='findings' and getting its parent_id.
     2. Finding the asset with type='asset' where uid=parent_id and getting its 'name'.
-    Used primarily for indexing where the repo URL is already known.
+    Used for **evidence / chat** paths where the id is a ``findings`` row.
     """
     if not has_pgvector():
         return None

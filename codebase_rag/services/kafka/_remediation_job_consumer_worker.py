@@ -15,7 +15,7 @@ from ...prompts import API_REMEDIATION_PROMPT
 from ...utils.token_utils import count_tokens
 from ...utils.tool_call_store import fetch_latest_stage_output, store_tool_call
 from .stage_job_payloads import DownstreamStagePayloadV1
-from ._pipeline_cleanup import maybe_cleanup_repo_after_chat_pipeline
+from ._pipeline_cleanup import release_repo_lease_if_unused
 
 
 def _validate_models_for_payload(payload: DownstreamStagePayloadV1) -> None:
@@ -78,9 +78,9 @@ async def process_remediation_job_message(*, payload: DownstreamStagePayloadV1, 
         )
         # Mark the end of the full Kafka chat pipeline invocation (evidence + scoring + remediation).
         await observability_hook.after_chat_success(tool_call_id=payload.invocation_id)
-        await maybe_cleanup_repo_after_chat_pipeline(
-            invocation_id=payload.invocation_id,
+        await release_repo_lease_if_unused(
             repo_path=payload.target_repo_path,
+            repo_lease_id=payload.repo_lease_id,
         )
         logger.info(
             "Kafka remediation job {} org_id={} completed successfully",

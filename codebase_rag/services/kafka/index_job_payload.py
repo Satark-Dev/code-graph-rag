@@ -13,7 +13,8 @@ class IndexJobPayload(BaseModel):
 
     org_id: str
     repo_url: str
-    org_tool_finding_id: str
+    # Branch asset row: public.org_tool_findings.id where type='asset'; git branch = name.
+    org_tool_findings_id: str
     clean: bool = True
     exclude: list[str] | None = None
     invocation_id: str
@@ -26,12 +27,12 @@ class IndexJobPayload(BaseModel):
             raise ValueError("org_id is required")
         return v
 
-    @field_validator("org_tool_finding_id")
+    @field_validator("org_tool_findings_id")
     @classmethod
     def _finding_non_blank(cls, value: str) -> str:
         v = value.strip()
         if not v:
-            raise ValueError("org_tool_finding_id is required")
+            raise ValueError("org_tool_findings_id is required")
         return v
 
     @field_validator("repo_url")

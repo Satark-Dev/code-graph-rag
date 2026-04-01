@@ -11,8 +11,8 @@ from ...observability.hook import observability_hook
 from ...parser_loader import load_parsers
 from ...request_context import org_id_context
 from ...utils.org_tool_finding_store import (
-    get_all_child_findings_for_branch,
-    get_branch_name_for_finding,
+    get_all_child_findings_for_branch_asset,
+    get_branch_name_for_index_asset,
 )
 from .stage_job_payloads import EvidenceJobPayloadV1
 from .producer import kafka_service
@@ -40,15 +40,15 @@ async def process_index_job_message(
         await observability_hook.before_chat(org_id=payload.org_id, invocation_id=invocation)
         await observability_hook.log_tool_start(tool_name="index", tool_call_id=invocation)
 
-        # Determine branch name from the finding
-        branch_name = get_branch_name_for_finding(
-            payload.org_tool_finding_id,
+        # Backend sends the branch asset row id; branch = that row's name (type='asset').
+        branch_name = get_branch_name_for_index_asset(
+            payload.org_tool_findings_id,
             payload.org_id,
         )
         if not branch_name or not str(branch_name).strip():
             logger.error(
-                "Index job cannot proceed: missing branch name for finding {} (org_id={}, repo_url={}, invocation_id={})",
-                payload.org_tool_finding_id,
+                "Index job cannot proceed: missing branch name for asset {} (org_id={}, repo_url={}, invocation_id={})",
+                payload.org_tool_findings_id,
                 payload.org_id,
                 payload.repo_url,
                 invocation,
@@ -124,8 +124,8 @@ async def process_index_job_message(
             # (children of the same branch asset). This ensures evidence/scoring/remediation
             # run separately for each finding.
             try:
-                all_finding_ids = get_all_child_findings_for_branch(
-                    payload.org_tool_finding_id,
+                all_finding_ids = get_all_child_findings_for_branch_asset(
+                    payload.org_tool_findings_id,
                     payload.org_id,
                 )
                 await kafka_service.start()

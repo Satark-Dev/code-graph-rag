@@ -10,7 +10,14 @@ except ImportError:
     sys.exit(1)
 
 
-TOPICS: Iterable[str] = ["queue.ai.invocation.logs"]
+# Default topics to monitor: observability + all Kafka job topics.
+TOPICS: Iterable[str] = [
+    "queue.ai.invocation.logs",
+    "ai.cgr.index",
+    "ai.cgr.evidence",
+    "ai.cgr.score",
+    "ai.cgr.remediation",
+]
 
 
 def main() -> None:

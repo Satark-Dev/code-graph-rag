@@ -67,6 +67,8 @@ class DownstreamStagePayloadV1(BaseModel):
     repo_state_hash: str
     target_repo_path: str
     invocation_id: str
+    # Unique per evidence Kafka message; used to refcount shared clones under target_repo_path.
+    repo_lease_id: str
     org_tool_findings_ids: list[str]
     orchestrator: str | None = None
     cypher: str | None = None
@@ -78,6 +80,7 @@ class DownstreamStagePayloadV1(BaseModel):
         "repo_state_hash",
         "target_repo_path",
         "invocation_id",
+        "repo_lease_id",
     )
     @classmethod
     def _non_blank(cls, value: str) -> str:
@@ -93,6 +96,21 @@ class DownstreamStagePayloadV1(BaseModel):
         if not cleaned:
             raise ValueError("org_tool_findings_ids must be non-empty")
         return cleaned
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_repo_lease_id(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        if "repoLeaseId" in out and "repo_lease_id" not in out:
+            out["repo_lease_id"] = out.pop("repoLeaseId")
+        rl = out.get("repo_lease_id")
+        if not rl or (isinstance(rl, str) and not rl.strip()):
+            ck = out.get("cache_key")
+            if ck and str(ck).strip():
+                out["repo_lease_id"] = str(ck).strip()
+        return out
 
     @classmethod
     def model_validate_payload(cls, raw: Any) -> DownstreamStagePayloadV1:

@@ -91,3 +91,54 @@ def test_get_branch_name_for_finding_accepts_finding_type_and_asset_id_fallback(
     assert params2[1] == "branch_asset_uuid"
     assert params2[2] == "branch_asset_uuid"
 
+
+def test_get_branch_name_for_index_asset_reads_asset_name(monkeypatch) -> None:
+    monkeypatch.setattr(store, "has_pgvector", lambda: True)
+    fake_conn = _FakeConn()
+    monkeypatch.setattr(store, "pg_connect", lambda autocommit=True: fake_conn)
+
+    fake_conn.cur._fetch_queue = [("feature/foo",)]
+
+    org_id = "3b393436-119f-45ca-8d53-842d7ec96771"
+    asset_id = "bc5f5a3d-0c7a-4d5c-ad47-835094e35356"
+    branch = store.get_branch_name_for_index_asset(asset_id, org_id)
+    assert branch == "feature/foo"
+
+    assert len(fake_conn.cur.calls) == 1
+    sql, params = fake_conn.cur.calls[0]
+    assert "type = 'asset'" in sql
+    assert params == (asset_id, org_id)
+
+
+def test_get_all_child_findings_for_branch_asset_uses_parent_id_keys(monkeypatch) -> None:
+    monkeypatch.setattr(store, "has_pgvector", lambda: True)
+    fake_conn = _FakeConn()
+    monkeypatch.setattr(store, "pg_connect", lambda autocommit=True: fake_conn)
+
+    asset_id = "bc5f5a3d-0c7a-4d5c-ad47-835094e35356"
+    org_id = "3b393436-119f-45ca-8d53-842d7ec96771"
+    uid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+    class _CursorWithFetchall(_FakeCursor):
+        def __init__(self) -> None:
+            super().__init__()
+            self._fetchall_queue: list[list] = []
+
+        def fetchall(self):
+            if self._fetchall_queue:
+                return self._fetchall_queue.pop(0)
+            return []
+
+    cur = _CursorWithFetchall()
+    fake_conn.cur = cur
+    cur._fetch_queue = [(uid,)]
+    cur._fetchall_queue = [[("f1",), ("f2",)]]
+
+    ids = store.get_all_child_findings_for_branch_asset(asset_id, org_id)
+    assert ids == ["f1", "f2"]
+
+    assert len(cur.calls) == 2
+    sql2, params2 = cur.calls[1]
+    assert "AND parent_id = %s" in sql2
+    assert params2 == (org_id, uid)
+

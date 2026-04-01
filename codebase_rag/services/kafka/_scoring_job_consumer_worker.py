@@ -17,9 +17,6 @@ from ...utils.tool_call_store import store_tool_call
 from ...utils.token_utils import count_tokens
 from ...prompts import API_SCORING_PROMPT
 from .stage_job_payloads import DownstreamStagePayloadV1
-from ._pipeline_cleanup import maybe_cleanup_repo_after_chat_pipeline
-
-
 def _validate_models_for_payload(payload: DownstreamStagePayloadV1) -> None:
     if payload.orchestrator or payload.cypher:
         update_model_settings(payload.orchestrator, payload.cypher)
@@ -116,10 +113,6 @@ async def process_scoring_job_message(*, payload: DownstreamStagePayloadV1, inge
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             duration_ms=scoring_ms,
-        )
-        await maybe_cleanup_repo_after_chat_pipeline(
-            invocation_id=payload.invocation_id,
-            repo_path=payload.target_repo_path,
         )
         return True
     except Exception:

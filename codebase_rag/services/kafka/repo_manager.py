@@ -32,32 +32,37 @@ class RepoManager:
     def _in_use_dir(self, repo_path: Path) -> Path:
         return repo_path / ".cgr_in_use"
 
-    async def mark_in_use(self, *, repo_path: str, invocation_id: str) -> None:
-        """Mark a repo checkout as in-use by an invocation (reference-count via files)."""
-        rid = invocation_id.strip()
-        if not rid:
-            raise ValueError("invocation_id is required")
+    async def mark_in_use(self, *, repo_path: str, lease_id: str) -> None:
+        """
+        Mark a repo checkout as held by one concurrent pipeline (one file per lease).
+
+        Use a **unique** ``lease_id`` per evidence job (e.g. UUID). Many jobs may share the
+        same ``invocation_id`` while reusing one clone; a single shared marker would delete
+        the repo as soon as the first pipeline finished.
+        """
+        lid = lease_id.strip()
+        if not lid:
+            raise ValueError("lease_id is required")
         p = Path(repo_path).resolve()
         async with self._lock:
             d = self._in_use_dir(p)
             d.mkdir(parents=True, exist_ok=True)
-            (d / rid).write_text("1", encoding="utf-8")
+            (d / lid).write_text("1", encoding="utf-8")
 
-    async def release_and_cleanup_if_unused(self, *, repo_path: str, invocation_id: str) -> bool:
+    async def release_and_cleanup_if_unused(self, *, repo_path: str, lease_id: str) -> bool:
         """
-        Remove this invocation's in-use marker. If no other markers remain, delete the repo.
-        Returns True if the repo was deleted.
+        Remove this lease's marker. If no lease files remain under ``.cgr_in_use``, delete the repo.
+        Returns True if the repo directory was removed.
         """
-        rid = invocation_id.strip()
-        if not rid:
-            raise ValueError("invocation_id is required")
+        lid = lease_id.strip()
+        if not lid:
+            raise ValueError("lease_id is required")
         p = Path(repo_path).resolve()
         async with self._lock:
             d = self._in_use_dir(p)
-            marker = d / rid
+            marker = d / lid
             if marker.exists():
                 marker.unlink(missing_ok=True)
-            # Remove repo only when no other invocations are using it.
             remaining: list[Path] = []
             if d.is_dir():
                 remaining = [x for x in d.iterdir() if x.is_file()]
