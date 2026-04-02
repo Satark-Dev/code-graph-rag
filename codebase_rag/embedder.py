@@ -174,7 +174,13 @@ def _best_effort_log_embedding_usage(
             # We are running inside a thread from asyncio.to_thread().
             # Running asyncio.run(coro) here is unsafe because the underlying
             # Kafka producer is bound to the main event loop.
-            pass
+            from .services.kafka.producer import kafka_service
+
+            k_loop = getattr(kafka_service, "_loop", None)
+            if k_loop is not None and k_loop.is_running():
+                asyncio.run_coroutine_threadsafe(coro, k_loop)
+            else:
+                coro.close()
     except (ImportError, ValueError) as e:
         logger.debug("Observability embeddings usage log skipped: {}", e)
     except Exception as e:

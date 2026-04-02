@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 from typing import Any
@@ -36,6 +37,7 @@ class KafkaService:
         from aiokafka import AIOKafkaProducer
 
         self._start_attempted = True
+        self._loop = asyncio.get_running_loop()
         producer = AIOKafkaProducer(
             bootstrap_servers=hosts,
             value_serializer=self._serializer,
@@ -64,6 +66,7 @@ class KafkaService:
             logger.warning("Error stopping Kafka producer: {}", exc)
         finally:
             self._producer = None
+            self._loop = None
         self._last_start_error = None
 
     async def send(
