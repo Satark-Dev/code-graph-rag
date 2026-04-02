@@ -724,7 +724,7 @@ def consumers(
     from .api import run_kafka_consumers_until
 
     app_context.console.print(
-        style("Starting embedded Kafka consumers (no HTTP server)...", cs.Color.GREEN)
+        style("Starting embedded Kafka consumers...", cs.Color.GREEN)
     )
 
     stop = False

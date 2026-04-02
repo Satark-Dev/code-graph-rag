@@ -150,8 +150,10 @@ class EmbeddingGenerator:
 
         except (AttributeError, ValueError, OSError, RuntimeError) as e:
             logger.error(ls.EMBEDDING_GENERATION_FAILED, error=e)
+            raise
         except Exception:
             logger.exception(ls.EMBEDDING_GENERATION_FAILED_UNEXPECTED)
+            raise
 
     def _flush_semantic_batch(
         self,

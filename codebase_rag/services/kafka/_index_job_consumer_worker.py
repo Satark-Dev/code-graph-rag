@@ -129,6 +129,12 @@ async def process_index_job_message(
                     payload.org_tool_findings_id,
                     payload.org_id,
                 )
+                
+                import os
+                if os.environ.get("CGR_KAFKA_SINGLE_FINDING", "0").strip().lower() in ("1", "true", "yes"):
+                    all_finding_ids = all_finding_ids[:1]
+                    logger.info("CGR_KAFKA_SINGLE_FINDING is enabled; restricting to 1 finding.")
+
                 await kafka_service.start()
                 for fid in all_finding_ids:
                     # Create a new invocation id for the scoring pipeline (evidence + scoring + remediation)
@@ -143,6 +149,7 @@ async def process_index_job_message(
                         settings.KAFKA_EVIDENCE_JOBS_TOPIC,
                         value=evidence_payload.model_dump(mode="json"),
                         key=scoring_invocation_id,
+                        raise_on_error=True,
                     )
                 logger.info(
                     "Enqueued {} evidence job(s) topic={} org_id={} invocation_id={}",

@@ -9,14 +9,15 @@ from loguru import logger
 from ...config import settings
 from ...main import update_model_settings
 from ...observability.hook import observability_hook
+from ...prompts import API_SCORING_PROMPT
 from ...request_context import org_id_context
 from ...services.chat_orchestrator import ChatOrchestratorService
 from ...utils.org_tool_finding_store import persist_org_tool_finding_scores
-from ...utils.tool_call_store import fetch_latest_stage_output
-from ...utils.tool_call_store import store_tool_call
 from ...utils.token_utils import count_tokens
-from ...prompts import API_SCORING_PROMPT
+from ...utils.tool_call_store import fetch_latest_stage_output, store_tool_call
 from .stage_job_payloads import DownstreamStagePayloadV1
+
+
 def _validate_models_for_payload(payload: DownstreamStagePayloadV1) -> None:
     if payload.orchestrator or payload.cypher:
         update_model_settings(payload.orchestrator, payload.cypher)
@@ -24,16 +25,24 @@ def _validate_models_for_payload(payload: DownstreamStagePayloadV1) -> None:
     settings.active_cypher_config.validate_api_key("cypher")
 
 
-async def process_scoring_job_message(*, payload: DownstreamStagePayloadV1, ingestor: Any) -> bool:
+async def process_scoring_job_message(
+    *, payload: DownstreamStagePayloadV1, ingestor: Any
+) -> bool:
     invocation = payload.invocation_id
     ctx_token = org_id_context.set(payload.org_id)
     t0 = time.perf_counter()
     try:
-        await observability_hook.before_chat(org_id=payload.org_id, invocation_id=invocation)
-        await observability_hook.log_tool_start(tool_name="scoring", tool_call_id=payload.tool_call_id)
+        await observability_hook.before_chat(
+            org_id=payload.org_id, invocation_id=invocation
+        )
+        await observability_hook.log_tool_start(
+            tool_name="scoring", tool_call_id=payload.tool_call_id
+        )
         _validate_models_for_payload(payload)
 
-        evidence_out = fetch_latest_stage_output(run_id=payload.invocation_id, stage="evidence")
+        evidence_out = fetch_latest_stage_output(
+            run_id=payload.invocation_id, stage="evidence"
+        )
         if not evidence_out or not isinstance(evidence_out, dict):
             logger.warning(
                 "Kafka scoring job {} org_id={}: missing evidence stage output for invocation_id={} (retry)",
@@ -47,7 +56,10 @@ async def process_scoring_job_message(*, payload: DownstreamStagePayloadV1, inge
         shared_input = {"findings": evidence_items}
         shared_payload = json.dumps(shared_input, ensure_ascii=False)
 
-        scoring_json, _usage_provider = await ChatOrchestratorService._run_scoring_stage(
+        (
+            scoring_json,
+            _usage_provider,
+        ) = await ChatOrchestratorService._run_scoring_stage(
             run_id=payload.invocation_id,
             tool_call_id=payload.tool_call_id,
             shared_payload=shared_payload,
@@ -73,7 +85,9 @@ async def process_scoring_job_message(*, payload: DownstreamStagePayloadV1, inge
             if idx >= len(findings):
                 break
             raw_finding = findings[idx]
-            analysis = raw_finding.get("analysis") if isinstance(raw_finding, dict) else None
+            analysis = (
+                raw_finding.get("analysis") if isinstance(raw_finding, dict) else None
+            )
             if not isinstance(analysis, dict):
                 continue
             score = analysis.get("score")
@@ -144,4 +158,3 @@ async def process_scoring_job_message(*, payload: DownstreamStagePayloadV1, inge
         return False
     finally:
         org_id_context.reset(ctx_token)
-

@@ -171,8 +171,11 @@ def _best_effort_log_embedding_usage(
             loop = asyncio.get_running_loop()
             loop.create_task(coro)
         except RuntimeError:
-            asyncio.run(coro)
-    except (ImportError, RuntimeError, ValueError) as e:
+            # We are running inside a thread from asyncio.to_thread().
+            # Running asyncio.run(coro) here is unsafe because the underlying
+            # Kafka producer is bound to the main event loop.
+            pass
+    except (ImportError, ValueError) as e:
         logger.debug("Observability embeddings usage log skipped: {}", e)
     except Exception as e:
         logger.debug("Observability embeddings usage log failed: {}", e)

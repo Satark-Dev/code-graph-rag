@@ -104,21 +104,18 @@ async def run_consumer_loop(
             return queues[tp]
 
         async def _reader() -> None:
-            poll = max(cfg.fetch_max_wait_ms / 1000.0, 0.05)
+            poll_ms = max(cfg.fetch_max_wait_ms, 50)
             while not stop_event.is_set():
                 try:
-                    msg = await asyncio.wait_for(consumer.getone(), timeout=poll)
-                except TimeoutError:
-                    continue
+                    result = await consumer.getmany(timeout_ms=poll_ms)
                 except asyncio.CancelledError:
                     raise
                 except KafkaError as e:
                     logger.warning(cfg.read_error_log_msg, e)
                     return
-                if msg is None:
-                    continue
-                tp = TopicPartition(msg.topic, msg.partition)
-                await _ensure_queue(tp).put(msg)
+                for tp, messages in result.items():
+                    for msg in messages:
+                        await _ensure_queue(tp).put(msg)
 
         read_task = asyncio.create_task(_reader())
         try:

@@ -72,14 +72,17 @@ class KafkaService:
         value: Any,
         *,
         key: str | bytes | None = None,
+        raise_on_error: bool = False,
     ) -> None:
-        """Send one message; log and drop if producer is unavailable."""
+        """Send one message; log and drop if producer is unavailable (unless raise_on_error)."""
         if self._producer is None:
             logger.debug(
                 "Dropping Kafka message (producer unavailable) last_error={} topic={}",
                 self._last_start_error,
                 topic,
             )
+            if raise_on_error:
+                raise RuntimeError("Kafka producer unavailable")
             return
         kafka_key: bytes | None = None
         if key is not None:
@@ -88,6 +91,8 @@ class KafkaService:
             await self._producer.send(topic, value=value, key=kafka_key)
         except Exception as exc:
             logger.warning("Failed to send Kafka topic={}: {}", topic, exc)
+            if raise_on_error:
+                raise
 
     @staticmethod
     def _serializer(value: Any) -> bytes:
