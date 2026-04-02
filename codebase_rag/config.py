@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TypedDict, Unpack
 
 from dotenv import load_dotenv
 from loguru import logger
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from . import constants as cs
@@ -145,140 +147,329 @@ class AppConfig(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",
     )
 
-    MEMGRAPH_HOST: str = "localhost"
-    MEMGRAPH_PORT: int = 7687
-    MEMGRAPH_HTTP_PORT: int = 7444
-    MEMGRAPH_USERNAME: str | None = None
-    MEMGRAPH_PASSWORD: str | None = None
-    LAB_PORT: int = 3000
-    MEMGRAPH_BATCH_SIZE: int = 1000
-    AGENT_RETRIES: int = 3
-    ORCHESTRATOR_OUTPUT_RETRIES: int = 100
+    MEMGRAPH_HOST: str
+    MEMGRAPH_PORT: int
+    MEMGRAPH_HTTP_PORT: int
+    MEMGRAPH_USERNAME: str | None
+    MEMGRAPH_PASSWORD: str | None
+    LAB_PORT: int
+    MEMGRAPH_BATCH_SIZE: int
+    AGENT_RETRIES: int
+    ORCHESTRATOR_OUTPUT_RETRIES: int
 
-    ORCHESTRATOR_PROVIDER: str = ""
-    ORCHESTRATOR_MODEL: str = ""
-    ORCHESTRATOR_API_KEY: str | None = None
-    ORCHESTRATOR_ENDPOINT: str | None = None
-    ORCHESTRATOR_PROJECT_ID: str | None = None
-    ORCHESTRATOR_REGION: str = cs.DEFAULT_REGION
-    ORCHESTRATOR_PROVIDER_TYPE: cs.GoogleProviderType | None = None
-    ORCHESTRATOR_THINKING_BUDGET: int | None = None
-    ORCHESTRATOR_SERVICE_ACCOUNT_FILE: str | None = None
+    # --- Chat orchestration policy (API /api/chat) ---
+    CHAT_EVIDENCE_TIMEOUT_SECONDS: float = 120.0
+    CHAT_SCORING_TIMEOUT_SECONDS: float = 90.0
+    CHAT_REMEDIATION_TIMEOUT_SECONDS: float = 90.0
+    CHAT_SCHEMA_RETRY_ATTEMPTS: int = 2
 
-    CYPHER_PROVIDER: str = ""
-    CYPHER_MODEL: str = ""
-    CYPHER_API_KEY: str | None = None
-    CYPHER_ENDPOINT: str | None = None
-    CYPHER_PROJECT_ID: str | None = None
-    CYPHER_REGION: str = cs.DEFAULT_REGION
-    CYPHER_PROVIDER_TYPE: cs.GoogleProviderType | None = None
-    CYPHER_THINKING_BUDGET: int | None = None
-    CYPHER_SERVICE_ACCOUNT_FILE: str | None = None
+    ORCHESTRATOR_PROVIDER: str
+    ORCHESTRATOR_MODEL: str
+    ORCHESTRATOR_API_KEY: str | None
+    ORCHESTRATOR_ENDPOINT: str | None
+    ORCHESTRATOR_PROJECT_ID: str | None
+    ORCHESTRATOR_REGION: str
+    ORCHESTRATOR_PROVIDER_TYPE: cs.GoogleProviderType | None
+    ORCHESTRATOR_THINKING_BUDGET: int | None
+    ORCHESTRATOR_SERVICE_ACCOUNT_FILE: str | None
 
-    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    CYPHER_PROVIDER: str
+    CYPHER_MODEL: str
+    CYPHER_API_KEY: str | None
+    CYPHER_ENDPOINT: str | None
+    CYPHER_PROJECT_ID: str | None
+    CYPHER_REGION: str
+    CYPHER_PROVIDER_TYPE: cs.GoogleProviderType | None
+    CYPHER_THINKING_BUDGET: int | None
+    CYPHER_SERVICE_ACCOUNT_FILE: str | None
+
+    OLLAMA_BASE_URL: str
+    BACKEND_API_BASE_URL: str
+
+    SHELL_COMMAND_TIMEOUT: int
+    SHELL_COMMAND_REPEAT_LIMIT: int = Field(..., gt=0)
+    SHELL_COMMAND_REPEAT_WINDOW_SECONDS: int = Field(..., gt=0)
+    SHELL_COMMAND_ALLOWLIST: frozenset[str]
+    SHELL_READ_ONLY_COMMANDS: frozenset[str]
+    SHELL_SAFE_GIT_SUBCOMMANDS: frozenset[str]
+
+    # --- Postgres: Core DB (user_org) → region → org DB DSN only ---
+    # org_id must come from API request context.
+    CORE_DB_HOST: str | None = None
+    CORE_DB_PORT: int | None = None
+    CORE_DB_USER: str | None = None
+    CORE_DB_PASSWORD: str | None = None
+    CORE_DB_NAME: str | None = None
+    CORE_DB_SSL: str | None = None
+    ORG_DB_HOST_1: str | None = None
+    ORG_DB_PORT_1: int | None = None
+    ORG_DB_USER_1: str | None = None
+    ORG_DB_PASSWORD_1: str | None = None
+    ORG_DB_NAME_1: str | None = None
+    ORG_DB_SSL_1: str | None = None
+    ORG_DB_HOST_2: str | None = None
+    ORG_DB_PORT_2: int | None = None
+    ORG_DB_USER_2: str | None = None
+    ORG_DB_PASSWORD_2: str | None = None
+    ORG_DB_NAME_2: str | None = None
+    ORG_DB_SSL_2: str | None = None
+    DB_POOL_MIN_SIZE: int = 2
+    DB_POOL_MAX_SIZE: int = 10
+    DB_COMMAND_TIMEOUT: int = 60
+    DB_CONNECT_TIMEOUT: int = 30
+
+    # Table/schema settings for embeddings (DB host is resolved via org routing).
+    PGVECTOR_TABLE_NAME: str
+    PGVECTOR_DIM: int
+    PGVECTOR_TOP_K: int
+    PGVECTOR_UPSERT_RETRIES: int = Field(..., gt=0)
+    PGVECTOR_RETRY_BASE_DELAY: float = Field(..., gt=0)
+    PGVECTOR_BATCH_SIZE: int = Field(..., gt=0)
+    EMBEDDING_BATCH_SIZE: int = Field(..., gt=0)
+    EMBEDDING_MAX_LENGTH: int
+    EMBEDDING_PROGRESS_INTERVAL: int
+    SOURCE_CACHE_MAX_ENTRIES: int = Field(..., gt=0)
+    SOURCE_CACHE_MAX_MEMORY_MB: int = Field(..., gt=0)
+    SEMANTIC_SEARCH_ENABLED: bool
+    SEMANTIC_SEARCH_EMPTY_COOLDOWN_SECONDS: int = Field(..., gt=0)
+    SEMANTIC_SEARCH_REPEAT_COOLDOWN_SECONDS: int = Field(..., gt=0)
+    SEMANTIC_RERANK_ENABLED: bool = False
+    SEMANTIC_RERANK_CANDIDATES: int = Field(..., gt=0)
+    SEMANTIC_RERANK_PROVIDER: str
+    DEEPINFRA_API_KEY: str | None = None
+    DEEPINFRA_BASE_URL: str
+    DEEPINFRA_RERANK_MODEL: str
+    DEEPINFRA_TIMEOUT_SECONDS: float = Field(..., gt=0)
+    DEEPINFRA_MAX_RETRIES: int = Field(..., ge=0)
+    SERVICE_CACHE_MAX_ENTRIES: int = Field(..., gt=0)
+
+    FLUSH_THREAD_POOL_SIZE: int = Field(..., gt=0)
+    FILE_FLUSH_INTERVAL: int = Field(..., gt=0)
+
+    CACHE_MAX_ENTRIES: int
+    CACHE_MAX_MEMORY_MB: int
+    CACHE_EVICTION_DIVISOR: int
+    CACHE_MEMORY_THRESHOLD_RATIO: float
+
+    QUERY_RESULT_MAX_TOKENS: int = Field(..., gt=0)
+    QUERY_RESULT_ROW_CAP: int = Field(..., gt=0)
+
+    MAX_FILE_READ_CHARS: int = Field(..., gt=0)
+    MAX_DIR_LIST_ENTRIES: int = Field(..., gt=0)
+
+    OLLAMA_HEALTH_TIMEOUT: float
+
+    _active_orchestrator: ModelConfig | None = None
+    _active_cypher: ModelConfig | None = None
+
+    HF_TOKEN: str | None
+
+    # --- Embeddings (OpenAI) ---
+    EMBEDDINGS_MODEL: str = "text-embedding-3-small"
+    EMBEDDINGS_API_KEY: str | None = None
+    EMBEDDINGS_ENDPOINT: str | None = None
+
+    QUIET: bool = Field(..., validation_alias="CGR_QUIET")
+
+    MCP_HTTP_HOST: str
+    MCP_HTTP_PORT: int
+    MCP_HTTP_ENDPOINT_PATH: str
+
+    STRICT_ENV: bool = Field(True, validation_alias="CGR_STRICT_ENV")
 
     @property
     def ollama_endpoint(self) -> str:
         return f"{self.OLLAMA_BASE_URL.rstrip('/')}/v1"
 
-    TARGET_REPO_PATH: str = "."
-    SHELL_COMMAND_TIMEOUT: int = 30
-    SHELL_COMMAND_ALLOWLIST: frozenset[str] = frozenset(
-        {
-            "ls",
-            "rg",
-            "cat",
-            "git",
-            "echo",
-            "pwd",
-            "pytest",
-            "mypy",
-            "ruff",
-            "uv",
-            "find",
-            "pre-commit",
-            "rm",
-            "cp",
-            "mv",
-            "mkdir",
-            "rmdir",
-            "wc",
-            "head",
-            "tail",
-            "sort",
-            "uniq",
-            "cut",
-            "tr",
-            "xargs",
-            "awk",
-            "sed",
-            "tee",
-        }
+    # --- Kafka ---
+    KAFKA_BOOTSTRAP_SERVERS: str = ""
+
+    # --- Kafka (stage-separated chat pipeline) ---
+    KAFKA_EVIDENCE_JOBS_TOPIC: str = "ai.cgr.evidence"
+    KAFKA_EVIDENCE_CONSUMER_GROUP_ID: str = "cgr-evidence-jobs"
+    KAFKA_EVIDENCE_MAX_CONCURRENCY: int = Field(4, ge=1)
+    KAFKA_EVIDENCE_AUTO_OFFSET_RESET: str = "latest"
+    KAFKA_EVIDENCE_FETCH_MAX_WAIT_MS: int = Field(500, ge=1)
+    KAFKA_EVIDENCE_SESSION_TIMEOUT_MS: int = Field(30_000, ge=1)
+    KAFKA_EVIDENCE_RECONNECT_MAX_SECONDS: float = Field(60.0, gt=0)
+    KAFKA_EVIDENCE_RECONNECT_BACKOFF_INITIAL: float = Field(1.0, gt=0)
+    KAFKA_EVIDENCE_TOPIC_NUM_PARTITIONS: int = Field(3, ge=1)
+    KAFKA_EVIDENCE_TOPIC_REPLICATION_FACTOR: int = Field(1, ge=1)
+
+    KAFKA_SCORING_JOBS_TOPIC: str = "ai.cgr.score"
+    KAFKA_SCORING_CONSUMER_GROUP_ID: str = "cgr-scoring-jobs"
+    KAFKA_SCORING_MAX_CONCURRENCY: int = Field(4, ge=1)
+    KAFKA_SCORING_AUTO_OFFSET_RESET: str = "latest"
+    KAFKA_SCORING_FETCH_MAX_WAIT_MS: int = Field(500, ge=1)
+    KAFKA_SCORING_SESSION_TIMEOUT_MS: int = Field(30_000, ge=1)
+    KAFKA_SCORING_RECONNECT_MAX_SECONDS: float = Field(60.0, gt=0)
+    KAFKA_SCORING_RECONNECT_BACKOFF_INITIAL: float = Field(1.0, gt=0)
+    KAFKA_SCORING_TOPIC_NUM_PARTITIONS: int = Field(3, ge=1)
+    KAFKA_SCORING_TOPIC_REPLICATION_FACTOR: int = Field(1, ge=1)
+
+    KAFKA_REMEDIATION_JOBS_TOPIC: str = "ai.cgr.remediation"
+    KAFKA_REMEDIATION_CONSUMER_GROUP_ID: str = "cgr-remediation-jobs"
+    KAFKA_REMEDIATION_MAX_CONCURRENCY: int = Field(4, ge=1)
+    KAFKA_REMEDIATION_AUTO_OFFSET_RESET: str = "latest"
+    KAFKA_REMEDIATION_FETCH_MAX_WAIT_MS: int = Field(500, ge=1)
+    KAFKA_REMEDIATION_SESSION_TIMEOUT_MS: int = Field(30_000, ge=1)
+    KAFKA_REMEDIATION_RECONNECT_MAX_SECONDS: float = Field(60.0, gt=0)
+    KAFKA_REMEDIATION_RECONNECT_BACKOFF_INITIAL: float = Field(1.0, gt=0)
+    KAFKA_REMEDIATION_TOPIC_NUM_PARTITIONS: int = Field(3, ge=1)
+    KAFKA_REMEDIATION_TOPIC_REPLICATION_FACTOR: int = Field(1, ge=1)
+
+    # --- Kafka (index job consumer) ---
+    KAFKA_OBSERVABILITY_TOPIC: str = "queue.ai.invocation.logs"
+    KAFKA_INDEX_JOBS_TOPIC: str = "ai.cgr.index"
+    KAFKA_INDEX_CONSUMER_GROUP_ID: str = "cgr-index-jobs"
+    KAFKA_INDEX_MAX_CONCURRENCY: int = Field(2, ge=1)
+    KAFKA_INDEX_AUTO_OFFSET_RESET: str = "latest"
+    KAFKA_INDEX_SHUTDOWN_GRACE_SECONDS: float = Field(30.0, gt=0)
+    KAFKA_INDEX_FETCH_MAX_WAIT_MS: int = Field(500, ge=1)
+    KAFKA_INDEX_SESSION_TIMEOUT_MS: int = Field(30_000, ge=1)
+    KAFKA_INDEX_RECONNECT_MAX_SECONDS: float = Field(60.0, gt=0)
+    KAFKA_INDEX_RECONNECT_BACKOFF_INITIAL: float = Field(1.0, gt=0)
+    KAFKA_INDEX_TOPIC_NUM_PARTITIONS: int = Field(1, ge=1)
+    KAFKA_INDEX_TOPIC_REPLICATION_FACTOR: int = Field(1, ge=1)
+    KAFKA_REPO_ROOT: str = Field("/tmp/cgr_repos", validation_alias="CGR_KAFKA_REPO_ROOT")
+
+    @field_validator(
+        "KAFKA_EVIDENCE_AUTO_OFFSET_RESET",
+        "KAFKA_SCORING_AUTO_OFFSET_RESET",
+        "KAFKA_REMEDIATION_AUTO_OFFSET_RESET",
+        mode="after",
     )
-    SHELL_READ_ONLY_COMMANDS: frozenset[str] = frozenset(
-        {
-            "ls",
-            "cat",
-            "find",
-            "pwd",
-            "rg",
-            "echo",
-            "wc",
-            "head",
-            "tail",
-            "sort",
-            "uniq",
-            "cut",
-            "tr",
-        }
+    @classmethod
+    def _kafka_stage_auto_offset_reset(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in ("latest", "earliest"):
+            raise ValueError(
+                "Kafka stage AUTO_OFFSET_RESET must be 'latest' or 'earliest'"
+            )
+        return normalized
+
+    @field_validator("KAFKA_INDEX_AUTO_OFFSET_RESET", mode="after")
+    @classmethod
+    def _kafka_index_auto_offset_reset(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in ("latest", "earliest"):
+            raise ValueError(
+                "KAFKA_INDEX_AUTO_OFFSET_RESET must be 'latest' or 'earliest'"
+            )
+        return normalized
+
+    def kafka_bootstrap_servers_list(self) -> list[str]:
+        raw = self.KAFKA_BOOTSTRAP_SERVERS.strip()
+        if not raw:
+            return []
+        return [h.strip() for h in raw.split(",") if h.strip()]
+
+    @field_validator(
+        "MEMGRAPH_USERNAME",
+        "MEMGRAPH_PASSWORD",
+        "ORCHESTRATOR_API_KEY",
+        "ORCHESTRATOR_ENDPOINT",
+        "ORCHESTRATOR_PROJECT_ID",
+        "ORCHESTRATOR_PROVIDER_TYPE",
+        "ORCHESTRATOR_THINKING_BUDGET",
+        "ORCHESTRATOR_SERVICE_ACCOUNT_FILE",
+        "CYPHER_API_KEY",
+        "CYPHER_ENDPOINT",
+        "CYPHER_PROJECT_ID",
+        "CYPHER_PROVIDER_TYPE",
+        "CYPHER_THINKING_BUDGET",
+        "CYPHER_SERVICE_ACCOUNT_FILE",
+        "HF_TOKEN",
+        "CORE_DB_HOST",
+        "CORE_DB_USER",
+        "CORE_DB_PASSWORD",
+        "CORE_DB_NAME",
+        "CORE_DB_SSL",
+        "ORG_DB_HOST_1",
+        "ORG_DB_USER_1",
+        "ORG_DB_PASSWORD_1",
+        "ORG_DB_NAME_1",
+        "ORG_DB_SSL_1",
+        "ORG_DB_HOST_2",
+        "ORG_DB_USER_2",
+        "ORG_DB_PASSWORD_2",
+        "ORG_DB_NAME_2",
+        "ORG_DB_SSL_2",
+        "PGVECTOR_TABLE_NAME",
+        mode="before",
     )
-    SHELL_SAFE_GIT_SUBCOMMANDS: frozenset[str] = frozenset(
-        {
-            "status",
-            "log",
-            "diff",
-            "show",
-            "ls-files",
-            "remote",
-            "config",
-            "branch",
-        }
+    @classmethod
+    def _empty_to_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator(
+        "CORE_DB_PORT",
+        "ORG_DB_PORT_1",
+        "ORG_DB_PORT_2",
+        mode="before",
     )
+    @classmethod
+    def _optional_int_ports(cls, value: object) -> object:
+        if value == "" or value is None:
+            return None
+        return value
 
-    QDRANT_DB_PATH: str = "./.qdrant_code_embeddings"
-    QDRANT_COLLECTION_NAME: str = "code_embeddings"
-    QDRANT_VECTOR_DIM: int = 768
-    QDRANT_TOP_K: int = 5
-    QDRANT_UPSERT_RETRIES: int = Field(default=3, gt=0)
-    QDRANT_RETRY_BASE_DELAY: float = Field(default=0.5, gt=0)
-    QDRANT_BATCH_SIZE: int = Field(default=50, gt=0)
-    EMBEDDING_MAX_LENGTH: int = 512
-    EMBEDDING_PROGRESS_INTERVAL: int = 10
+    @field_validator(
+        "SHELL_COMMAND_ALLOWLIST",
+        "SHELL_READ_ONLY_COMMANDS",
+        "SHELL_SAFE_GIT_SUBCOMMANDS",
+        mode="before",
+    )
+    @classmethod
+    def _parse_command_sets(cls, value: object) -> frozenset[str]:
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return frozenset()
+            if raw.startswith("["):
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError:
+                    parsed = raw.split(",")
+            else:
+                parsed = raw.split(",")
+            return frozenset(item.strip() for item in parsed if str(item).strip())
+        if isinstance(value, (list, set, tuple, frozenset)):
+            return frozenset(str(item).strip() for item in value if str(item).strip())
+        return frozenset()
 
-    FLUSH_THREAD_POOL_SIZE: int = Field(default=4, gt=0)
-    FILE_FLUSH_INTERVAL: int = Field(default=500, gt=0)
+    @field_validator(
+        "MEMGRAPH_HOST",
+        "ORCHESTRATOR_PROVIDER",
+        "ORCHESTRATOR_MODEL",
+        "ORCHESTRATOR_REGION",
+        "CYPHER_PROVIDER",
+        "CYPHER_MODEL",
+        "CYPHER_REGION",
+        "OLLAMA_BASE_URL",
+        "BACKEND_API_BASE_URL",
+        "PGVECTOR_TABLE_NAME",
+        "MCP_HTTP_HOST",
+        "MCP_HTTP_ENDPOINT_PATH",
+        mode="before",
+    )
+    @classmethod
+    def _non_empty_strings(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            raise ValueError("Value must not be empty")
+        return value
 
-    CACHE_MAX_ENTRIES: int = 1000
-    CACHE_MAX_MEMORY_MB: int = 500
-    CACHE_EVICTION_DIVISOR: int = 10
-    CACHE_MEMORY_THRESHOLD_RATIO: float = 0.8
-
-    QUERY_RESULT_MAX_TOKENS: int = Field(default=16000, gt=0)
-    QUERY_RESULT_ROW_CAP: int = Field(default=500, gt=0)
-
-    OLLAMA_HEALTH_TIMEOUT: float = 5.0
-    LITELLM_HEALTH_TIMEOUT: float = 5.0
-
-    _active_orchestrator: ModelConfig | None = None
-    _active_cypher: ModelConfig | None = None
-
-    QUIET: bool = Field(False, validation_alias="CGR_QUIET")
-
-    MCP_HTTP_HOST: str = "0.0.0.0"
-    MCP_HTTP_PORT: int = 8080
-    MCP_HTTP_ENDPOINT_PATH: str = "/mcp"
+    @field_validator("PGVECTOR_TABLE_NAME")
+    @classmethod
+    def _validate_cgr_table_prefix(cls, value: str) -> str:
+        if not value.startswith("cgr_"):
+            raise ValueError("PGVECTOR_TABLE_NAME must start with 'cgr_'")
+        return value
 
     def _get_default_config(self, role: str) -> ModelConfig:
         role_upper = role.upper()
@@ -349,7 +540,81 @@ class AppConfig(BaseSettings):
         return resolved
 
 
+def _required_env_keys() -> list[str]:
+    keys: list[str] = []
+    for name, field in AppConfig.model_fields.items():
+        if not field.is_required():
+            continue
+        alias = field.validation_alias
+        if isinstance(alias, str):
+            keys.append(alias)
+        else:
+            keys.append(name)
+    return keys
+
+
+def _assert_required_env_vars() -> None:
+    required_keys = _required_env_keys()
+    present = {key.lower() for key in os.environ.keys()}
+    missing = [key for key in required_keys if key.lower() not in present]
+    if missing:
+        missing_display = "\n  - ".join(sorted(missing))
+        raise ValueError(
+            "Missing required environment variables. Add them to your .env file:\n"
+            f"  - {missing_display}\n"
+        )
+
+
+_ENV_KEY_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=")
+
+
+def _env_example_keys(example_path: Path) -> list[str]:
+    if not example_path.is_file():
+        return []
+    keys: list[str] = []
+    try:
+        for line in example_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            m = _ENV_KEY_RE.match(line)
+            if m:
+                keys.append(m.group(1))
+    except OSError:
+        return []
+    return keys
+
+
+def _assert_env_matches_example(*, strict: bool) -> None:
+    if not strict:
+        return
+    example_path = Path(".env.example")
+    expected = _env_example_keys(example_path)
+    if not expected:
+        return
+    # Only enforce keys that are required by AppConfig (Field(...)).
+    # Optional keys (those with defaults) may exist in .env.example for documentation
+    # without forcing every developer to add them to their .env.
+    required = {k.lower() for k in _required_env_keys()}
+    present = {key.lower() for key in os.environ.keys()}
+    missing = [k for k in expected if k.lower() in required and k.lower() not in present]
+    if missing:
+        missing_display = "\n  - ".join(missing)
+        raise ValueError(
+            "Strict env mode: your .env is missing keys from .env.example.\n"
+            "Add these keys to your .env file:\n"
+            f"  - {missing_display}\n"
+        )
+
+
+_assert_required_env_vars()
 settings = AppConfig()
+_assert_env_matches_example(strict=bool(settings.STRICT_ENV))
+
+
+def kafka_consumer_reload_guard_allows_start() -> bool:
+    """Avoid double consumer with some dev reload parents (repomind / Werkzeug pattern)."""
+    run_main = os.environ.get("RUN_MAIN") or os.environ.get("WERKZEUG_RUN_MAIN")
+    return run_main is None or str(run_main).lower() == "true"
 
 CGRIGNORE_FILENAME = ".cgrignore"
 

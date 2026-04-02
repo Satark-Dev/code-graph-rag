@@ -272,6 +272,29 @@ class TestJavaTypeResolverMixin:
 
 
 class TestJavaMethodResolverMixin:
+    def test_resolve_imported_static_method(
+        self,
+        type_inference_engine: JavaTypeInferenceEngine,
+        mock_import_processor: MagicMock,
+        mock_function_registry: MagicMock,
+    ) -> None:
+        mock_import_processor.import_mapping = {
+            "com.example": {"Maps": "com.google.common.collect.Maps"}
+        }
+        mock_function_registry.find_with_prefix = MagicMock(
+            return_value=[
+                ("com.google.common.collect.Maps", NodeType.CLASS),
+                ("com.google.common.collect.Maps.newHashMap()", NodeType.METHOD),
+            ]
+        )
+
+        result = type_inference_engine._resolve_imported_static_method(
+            "Maps", "newHashMap", "com.example"
+        )
+        assert result is not None
+        assert result[0] == NodeType.METHOD
+        assert result[1] == "com.google.common.collect.Maps.newHashMap()"
+
     def test_resolve_java_object_type_from_local_vars(
         self, type_inference_engine: JavaTypeInferenceEngine
     ) -> None:

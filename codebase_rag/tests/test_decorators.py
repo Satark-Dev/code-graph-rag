@@ -394,6 +394,7 @@ class TestRecursionGuard:
             def process(
                 self, a: str, b: str, optional: str | None = None
             ) -> str | None:
+                _ = optional
                 return "done"
 
         analyzer = Analyzer()

@@ -42,6 +42,7 @@ class PythonTypeInferenceEngine(
         "simple_name_lookup",
         "_js_type_inference_getter",
         "_method_return_type_cache",
+        "_class_property_cache",
         "_type_inference_in_progress",
     )
 
@@ -70,12 +71,16 @@ class PythonTypeInferenceEngine(
         self._js_type_inference_getter = js_type_inference_getter
 
         self._method_return_type_cache: dict[str, str | None] = {}
+        self._class_property_cache: dict[str, dict[str, str]] = {}
         self._type_inference_in_progress: set[str] = set()
 
     def build_local_variable_type_map(
-        self, caller_node: Node, module_qn: str
+        self, caller_node: Node, module_qn: str, class_context: str | None = None
     ) -> dict[str, str]:
         local_var_types: dict[str, str] = {}
+
+        if class_context:
+            local_var_types.update(self._get_class_property_map(class_context, module_qn))
 
         try:
             self._infer_parameter_types(caller_node, local_var_types, module_qn)
@@ -86,3 +91,27 @@ class PythonTypeInferenceEngine(
             logger.debug(lg.PY_BUILD_VAR_MAP_FAILED, error=e)
 
         return local_var_types
+
+    def _get_class_property_map(self, class_qn: str, module_qn: str) -> dict[str, str]:
+        if class_qn in self._class_property_cache:
+            return self._class_property_cache[class_qn]
+
+        if class_qn in self._type_inference_in_progress:
+            return {}
+
+        self._type_inference_in_progress.add(class_qn)
+        try:
+            class_node = self._find_class_node(class_qn)
+            if not class_node:
+                return {}
+
+            property_map: dict[str, str] = {}
+            # 1. Fetch class-level declarations (e.g. db: Database)
+            self._analyze_class_level_declarations(class_node, property_map, module_qn)
+            # 2. Fetch all self.attr assignments within all methods of this class
+            self._analyze_self_assignments(class_node, property_map, module_qn)
+
+            self._class_property_cache[class_qn] = property_map
+            return property_map
+        finally:
+            self._type_inference_in_progress.remove(class_qn)

@@ -3,12 +3,6 @@ from __future__ import annotations
 import importlib.util
 from collections.abc import Sequence
 
-from codebase_rag.constants import (
-    MODULE_QDRANT_CLIENT,
-    MODULE_TORCH,
-    MODULE_TRANSFORMERS,
-)
-
 _dependency_cache: dict[str, bool] = {}
 
 
@@ -20,20 +14,18 @@ def _check_dependency(module_name: str) -> bool:
     return _dependency_cache[module_name]
 
 
-def has_torch() -> bool:
-    return _check_dependency(MODULE_TORCH)
+def has_pgvector() -> bool:
+    return _check_dependency("pgvector") and _check_dependency("psycopg")
 
 
-def has_transformers() -> bool:
-    return _check_dependency(MODULE_TRANSFORMERS)
-
-
-def has_qdrant_client() -> bool:
-    return _check_dependency(MODULE_QDRANT_CLIENT)
+def has_pgvector_client() -> bool:
+    # Legacy/optional dependency check for an older vector store implementation.
+    return _check_dependency("pgvector_client")
 
 
 def has_semantic_dependencies() -> bool:
-    return has_qdrant_client() and has_torch() and has_transformers()
+    # Semantic search is backed by PGVector + psycopg. Embeddings are provided via OpenAI.
+    return has_pgvector()
 
 
 def check_dependencies(required_modules: Sequence[str]) -> bool:

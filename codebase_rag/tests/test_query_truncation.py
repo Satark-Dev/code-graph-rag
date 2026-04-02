@@ -7,6 +7,13 @@ import pytest
 from codebase_rag.tools.codebase_query import create_query_tool
 from codebase_rag.types_defs import ResultRow
 
+pytestmark = [pytest.mark.anyio]
+
+
+@pytest.fixture(params=["asyncio"])
+def anyio_backend(request: pytest.FixtureRequest) -> str:
+    return str(request.param)
+
 
 @pytest.fixture
 def mock_ingestor() -> MagicMock:
@@ -21,7 +28,6 @@ def mock_cypher_gen() -> MagicMock:
 
 
 class TestQueryTruncation:
-    @pytest.mark.asyncio
     async def test_row_cap_truncation(
         self, mock_ingestor: MagicMock, mock_cypher_gen: MagicMock
     ) -> None:
@@ -37,7 +43,6 @@ class TestQueryTruncation:
         assert len(result.results) <= 500
         assert "truncated" in result.summary.lower() or "600" in result.summary
 
-    @pytest.mark.asyncio
     async def test_token_truncation(
         self, mock_ingestor: MagicMock, mock_cypher_gen: MagicMock
     ) -> None:
@@ -56,7 +61,6 @@ class TestQueryTruncation:
         assert len(result.results) < 100
         assert "truncated" in result.summary.lower()
 
-    @pytest.mark.asyncio
     async def test_no_truncation_when_within_limits(
         self, mock_ingestor: MagicMock, mock_cypher_gen: MagicMock
     ) -> None:

@@ -8,6 +8,7 @@ from rich.console import Console
 
 from codebase_rag.exceptions import LLMGenerationError
 from codebase_rag.tools.codebase_query import create_query_tool
+from codebase_rag.utils.cypher_sanitizer import CypherSanitizer
 
 pytestmark = [pytest.mark.anyio]
 
@@ -30,7 +31,8 @@ def mock_ingestor() -> MagicMock:
 @pytest.fixture
 def mock_cypher_gen() -> MagicMock:
     gen = MagicMock()
-    gen.generate = AsyncMock(return_value="MATCH (n) RETURN n")
+    # Must not be a bare-node match (MATCH (n)) because we reject those before sanitization.
+    gen.generate = AsyncMock(return_value="MATCH (n:File) RETURN n")
     return gen
 
 
@@ -97,7 +99,7 @@ class TestQueryCodebaseKnowledgeGraph:
         result = await tool.function(natural_language_query="Find all functions")
         assert result.results is not None
         assert len(result.results) == 2
-        assert result.query_used == "MATCH (n) RETURN n"
+        assert result.query_used == "MATCH (n:File) RETURN DISTINCT n;"
         assert "2" in result.summary
 
     async def test_query_calls_cypher_generator(
@@ -108,7 +110,9 @@ class TestQueryCodebaseKnowledgeGraph:
     ) -> None:
         tool = create_query_tool(mock_ingestor, mock_cypher_gen, console=mock_console)
         await tool.function(natural_language_query="Show me all classes")
-        mock_cypher_gen.generate.assert_called_once_with("Show me all classes")
+        mock_cypher_gen.generate.assert_called_once_with(
+            CypherSanitizer.append_memgraph_constraints("Show me all classes")
+        )
 
     async def test_query_calls_ingestor_fetch_all(
         self,
@@ -118,7 +122,7 @@ class TestQueryCodebaseKnowledgeGraph:
     ) -> None:
         tool = create_query_tool(mock_ingestor, mock_cypher_gen, console=mock_console)
         await tool.function(natural_language_query="Find functions")
-        mock_ingestor.fetch_all.assert_called_once_with("MATCH (n) RETURN n")
+        mock_ingestor.fetch_all.assert_called_once_with("MATCH (n:File) RETURN DISTINCT n;")
 
     async def test_empty_results_returns_zero_count(
         self,
@@ -149,6 +153,42 @@ class TestQueryCodebaseKnowledgeGraph:
             or "generation failed" in result.summary.lower()
         )
 
+    async def test_query_retries_on_destructive_query_rejection(
+        self,
+        mock_ingestor: MagicMock,
+        mock_cypher_gen: MagicMock,
+        mock_console: Console,
+    ) -> None:
+        mock_cypher_gen.generate = AsyncMock(
+            side_effect=[
+                LLMGenerationError("destructive"),
+                "MATCH (n) RETURN n",
+            ]
+        )
+        tool = create_query_tool(mock_ingestor, mock_cypher_gen, console=mock_console)
+        result = await tool.function(natural_language_query="Find safe query")
+        assert result.results is not None
+        assert result.query_used == "MATCH (n) RETURN DISTINCT n;"
+        assert mock_cypher_gen.generate.call_count == 2
+
+    async def test_query_uses_strict_retry_on_union_failures(
+        self,
+        mock_ingestor: MagicMock,
+        mock_cypher_gen: MagicMock,
+        mock_console: Console,
+    ) -> None:
+        mock_cypher_gen.generate = AsyncMock(
+            side_effect=[
+                "MATCH (x:Function|Method) RETURN x",
+                "MATCH (x:Function) RETURN x",
+            ]
+        )
+        tool = create_query_tool(mock_ingestor, mock_cypher_gen, console=mock_console)
+        result = await tool.function(natural_language_query="Find safe query")
+        assert result.results is not None
+        assert result.query_used == "MATCH (x:Function) RETURN DISTINCT x;"
+        assert mock_cypher_gen.generate.call_count == 2
+
     async def test_database_error_handled(
         self,
         mock_ingestor: MagicMock,
@@ -174,7 +214,7 @@ class TestQueryResultFormatting:
         )
         tool = create_query_tool(mock_ingestor, mock_cypher_gen, console=mock_console)
         result = await tool.function(natural_language_query="Find functions")
-        assert result.query_used == "MATCH (f:Function) RETURN f.name"
+        assert result.query_used == "MATCH (f:Function) RETURN DISTINCT f.name;"
 
     async def test_result_summary_contains_count(
         self,

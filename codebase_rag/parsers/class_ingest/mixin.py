@@ -162,8 +162,6 @@ class ClassIngestMixin:
             class_props[cs.KEY_ABSOLUTE_PATH] = file_path.resolve().as_posix()
         self.ingestor.ensure_node_batch(node_type, class_props)
         self.function_registry[class_qn] = node_type
-        if class_name:
-            self.simple_name_lookup[class_name].add(class_qn)
 
         rel.create_class_relationships(
             class_node,

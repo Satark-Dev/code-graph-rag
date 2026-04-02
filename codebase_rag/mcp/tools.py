@@ -101,7 +101,9 @@ class MCPToolsRegistry:
                 create_semantic_search_tool,
             )
 
-            self._semantic_search_tool = create_semantic_search_tool()
+            self._semantic_search_tool = create_semantic_search_tool(
+                repo_path=Path(self.project_root)
+            )
             self._semantic_search_available = True
         else:
             logger.info(lg.MCP_SEMANTIC_NOT_AVAILABLE)

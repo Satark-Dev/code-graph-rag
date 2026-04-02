@@ -1,112 +1,33 @@
 from __future__ import annotations
 
 import asyncio
-import difflib
 import json
-import os
-import shlex
-import shutil
 import sys
-import uuid
-from collections import deque
-from collections.abc import Coroutine
-from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from loguru import logger
-from prompt_toolkit import prompt
-from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.shortcuts import print_formatted_text
-from pydantic_ai import DeferredToolRequests, DeferredToolResults, ToolDenied
-from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.prompt import Confirm, Prompt
 from rich.table import Table
-from rich.text import Text
 
 from . import constants as cs
-from . import exceptions as ex
-from . import logs as ls
-from .config import ModelConfig, load_cgrignore_patterns, settings
-from .models import AppContext
-from .prompts import OPTIMIZATION_PROMPT, OPTIMIZATION_PROMPT_WITH_REFERENCE
-from .providers.base import get_provider_from_config
-from .services import QueryProtocol
-from .services.graph_service import MemgraphIngestor
-from .services.llm import CypherGenerator, create_rag_orchestrator
-from .tools.code_retrieval import CodeRetriever, create_code_retrieval_tool
-from .tools.codebase_query import create_query_tool
-from .tools.directory_lister import DirectoryLister, create_directory_lister_tool
-from .tools.document_analyzer import DocumentAnalyzer, create_document_analyzer_tool
-from .tools.file_editor import FileEditor, create_file_editor_tool
-from .tools.file_reader import FileReader, create_file_reader_tool
-from .tools.file_writer import FileWriter, create_file_writer_tool
-from .tools.semantic_search import (
-    create_get_function_source_tool,
-    create_semantic_search_tool,
+from .bootstrap import (
+    connect_memgraph,
+    initialize_services_and_agent,
+    prewarm_semantic_model,
+    setup_common_initialization,
+    update_model_settings,
 )
-from .tools.shell_command import ShellCommander, create_shell_command_tool
-from .types_defs import (
-    CHAT_LOOP_UI,
-    OPTIMIZATION_LOOP_UI,
-    ORANGE_STYLE,
-    AgentLoopUI,
-    CancelledResult,
-    ConfirmationToolNames,
-    CreateFileArgs,
-    GraphData,
-    RawToolArgs,
-    ReplaceCodeArgs,
-    ShellCommandArgs,
-    ToolArgs,
-)
+from .config import settings
+from .context import app_context
+from .graph_export import prompt_for_unignored_directories
+from .interactive_loop import run_chat_loop, run_optimization_loop
+from .types_defs import ConfirmationToolNames
+from .ui import style
 
 if TYPE_CHECKING:
-    from prompt_toolkit.key_binding import KeyPressEvent
     from pydantic_ai import Agent
     from pydantic_ai.messages import ModelMessage
-    from pydantic_ai.models import Model
-
-
-def style(
-    text: str, color: cs.Color, modifier: cs.StyleModifier = cs.StyleModifier.BOLD
-) -> str:
-    if modifier == cs.StyleModifier.NONE:
-        return f"[{color}]{text}[/{color}]"
-    return f"[{modifier} {color}]{text}[/{modifier} {color}]"
-
-
-def dim(text: str) -> str:
-    return f"[{cs.StyleModifier.DIM}]{text}[/{cs.StyleModifier.DIM}]"
-
-
-app_context = AppContext()
-
-
-def init_session_log(project_root: Path) -> Path:
-    log_dir = project_root / cs.TMP_DIR
-    log_dir.mkdir(exist_ok=True)
-    app_context.session.log_file = (
-        log_dir / f"{cs.SESSION_LOG_PREFIX}{uuid.uuid4().hex[:8]}{cs.SESSION_LOG_EXT}"
-    )
-    with open(app_context.session.log_file, "w") as f:
-        f.write(cs.SESSION_LOG_HEADER)
-    return app_context.session.log_file
-
-
-def log_session_event(event: str) -> None:
-    if app_context.session.log_file:
-        with open(app_context.session.log_file, "a") as f:
-            f.write(f"{event}\n")
-
-
-def get_session_context() -> str:
-    if app_context.session.log_file and app_context.session.log_file.exists():
-        content = app_context.session.log_file.read_text(encoding="utf-8")
-        return f"{cs.SESSION_CONTEXT_START}{content}{cs.SESSION_CONTEXT_END}"
-    return ""
 
 
 def _print_unified_diff(target: str, replacement: str, path: str) -> None:
@@ -249,20 +170,19 @@ def _process_tool_approvals(
     return deferred_results
 
 
-def _setup_common_initialization(repo_path: str) -> Path:
-    logger.remove()
-    logger.add(sys.stdout, format=cs.LOG_FORMAT)
+def _prewarm_semantic_model() -> None:
+    if not settings.SEMANTIC_SEARCH_ENABLED:
+        return
+    if not has_semantic_dependencies():
+        return
+    try:
+        from .embedder import prewarm_embeddings
 
-    project_root = Path(repo_path).resolve()
-    tmp_dir = project_root / cs.TMP_DIR
-    if tmp_dir.exists():
-        if tmp_dir.is_dir():
-            shutil.rmtree(tmp_dir)
-        else:
-            tmp_dir.unlink()
-    tmp_dir.mkdir()
-
-    return project_root
+        logger.info(ls.SEMANTIC_PREWARM_START)
+        prewarm_embeddings()
+        logger.info(ls.SEMANTIC_PREWARM_COMPLETE)
+    except Exception as e:
+        logger.warning(ls.SEMANTIC_PREWARM_FAILED.format(error=e))
 
 
 def _create_configuration_table(
@@ -737,49 +657,6 @@ def update_model_settings(
         _update_single_model_setting(cs.ModelRole.CYPHER, cypher)
 
 
-def _write_graph_json(ingestor: MemgraphIngestor, output_path: Path) -> GraphData:
-    graph_data: GraphData = ingestor.export_graph_to_dict()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(output_path, "w", encoding=cs.ENCODING_UTF8) as f:
-        json.dump(graph_data, f, indent=cs.JSON_INDENT, ensure_ascii=False)
-
-    return graph_data
-
-
-def connect_memgraph(batch_size: int) -> MemgraphIngestor:
-    return MemgraphIngestor(
-        host=settings.MEMGRAPH_HOST,
-        port=settings.MEMGRAPH_PORT,
-        batch_size=batch_size,
-        username=settings.MEMGRAPH_USERNAME,
-        password=settings.MEMGRAPH_PASSWORD,
-    )
-
-
-def export_graph_to_file(ingestor: MemgraphIngestor, output: str) -> bool:
-    output_path = Path(output)
-
-    try:
-        graph_data = _write_graph_json(ingestor, output_path)
-        metadata = graph_data[cs.KEY_METADATA]
-        app_context.console.print(
-            cs.UI_GRAPH_EXPORT_SUCCESS.format(path=output_path.absolute())
-        )
-        app_context.console.print(
-            cs.UI_GRAPH_EXPORT_STATS.format(
-                nodes=metadata[cs.KEY_TOTAL_NODES],
-                relationships=metadata[cs.KEY_TOTAL_RELATIONSHIPS],
-            )
-        )
-        return True
-
-    except Exception as e:
-        app_context.console.print(cs.UI_ERR_EXPORT_FAILED.format(error=e))
-        logger.exception(ls.EXPORT_ERROR.format(error=e))
-        return False
-
-
 def detect_excludable_directories(repo_path: Path) -> set[str]:
     detected: set[str] = set()
     queue: deque[tuple[Path, int]] = deque([(repo_path, 0)])
@@ -812,11 +689,11 @@ def _get_grouping_key(path: str) -> str:
 
 
 def _group_paths_by_pattern(paths: set[str]) -> dict[str, list[str]]:
-    groups: dict[str, list[str]] = {}
+    from collections import defaultdict
+
+    groups: defaultdict[str, list[str]] = defaultdict(list)
     for path in paths:
         key = _get_grouping_key(path)
-        if key not in groups:
-            groups[key] = []
         groups[key].append(path)
     for group_paths in groups.values():
         group_paths.sort()
@@ -971,7 +848,9 @@ def _validate_provider_config(role: cs.ModelRole, config: ModelConfig) -> None:
 
 
 def _initialize_services_and_agent(
-    repo_path: str, ingestor: QueryProtocol
+    repo_path: str,
+    ingestor: QueryProtocol,
+    system_prompt: str | None = None,
 ) -> tuple[Agent[None, str | DeferredToolRequests], ConfirmationToolNames]:
     _validate_provider_config(
         cs.ModelRole.ORCHESTRATOR, settings.active_orchestrator_config
@@ -979,15 +858,32 @@ def _initialize_services_and_agent(
     _validate_provider_config(cs.ModelRole.CYPHER, settings.active_cypher_config)
 
     cypher_generator = CypherGenerator()
-    code_retriever = CodeRetriever(project_root=repo_path, ingestor=ingestor)
-    file_reader = FileReader(project_root=repo_path)
-    file_writer = FileWriter(project_root=repo_path)
-    file_editor = FileEditor(project_root=repo_path)
-    shell_commander = ShellCommander(
-        project_root=repo_path, timeout=settings.SHELL_COMMAND_TIMEOUT
-    )
-    directory_lister = DirectoryLister(project_root=repo_path)
-    document_analyzer = DocumentAnalyzer(project_root=repo_path)
+
+    repo_key = str(Path(repo_path).resolve())
+    cache_key = (repo_key, id(ingestor))
+    with _SERVICE_CACHE_LOCK:
+        bundle = _SERVICE_CACHE.get(cache_key)
+        if bundle is None:
+            bundle = _ServiceBundle(
+                code_retriever=CodeRetriever(project_root=repo_key, ingestor=ingestor),
+                file_reader=FileReader(project_root=repo_key),
+                file_writer=FileWriter(project_root=repo_key),
+                file_editor=FileEditor(project_root=repo_key),
+                shell_commander=ShellCommander(
+                    project_root=repo_key, timeout=settings.SHELL_COMMAND_TIMEOUT
+                ),
+                directory_lister=DirectoryLister(project_root=repo_key),
+                document_analyzer=DocumentAnalyzer(project_root=repo_key),
+            )
+            _SERVICE_CACHE.put(cache_key, bundle)
+
+    code_retriever = bundle.code_retriever
+    file_reader = bundle.file_reader
+    file_writer = bundle.file_writer
+    file_editor = bundle.file_editor
+    shell_commander = bundle.shell_commander
+    directory_lister = bundle.directory_lister
+    document_analyzer = bundle.document_analyzer
 
     query_tool = create_query_tool(ingestor, cypher_generator, app_context.console)
     code_tool = create_code_retrieval_tool(code_retriever)
@@ -997,8 +893,8 @@ def _initialize_services_and_agent(
     shell_command_tool = create_shell_command_tool(shell_commander)
     directory_lister_tool = create_directory_lister_tool(directory_lister)
     document_analyzer_tool = create_document_analyzer_tool(document_analyzer)
-    semantic_search_tool = create_semantic_search_tool()
-    function_source_tool = create_get_function_source_tool()
+    semantic_search_tool = create_semantic_search_tool(ingestor=ingestor)
+    function_source_tool = create_get_function_source_tool(ingestor=ingestor)
 
     confirmation_tool_names = ConfirmationToolNames(
         replace_code=file_editor_tool.name,
@@ -1018,13 +914,14 @@ def _initialize_services_and_agent(
             document_analyzer_tool,
             semantic_search_tool,
             function_source_tool,
-        ]
+        ],
+        system_prompt=system_prompt,
     )
     return rag_agent, confirmation_tool_names
 
 
 def main_single_query(repo_path: str, batch_size: int, question: str) -> None:
-    _setup_common_initialization(repo_path)
+    setup_common_initialization(repo_path)
     # (H) Override logger to stderr so stdout is clean for scripted output
     logger.remove()
     logger.add(sys.stderr, level=cs.LOG_LEVEL_ERROR, format=cs.LOG_FORMAT)
@@ -1036,7 +933,7 @@ def main_single_query(repo_path: str, batch_size: int, question: str) -> None:
 
 
 async def main_async(repo_path: str, batch_size: int) -> None:
-    project_root = _setup_common_initialization(repo_path)
+    project_root = setup_common_initialization(repo_path)
 
     table = _create_configuration_table(repo_path)
     app_context.console.print(table)
@@ -1050,7 +947,8 @@ async def main_async(repo_path: str, batch_size: int) -> None:
             )
         )
 
-        rag_agent, tool_names = _initialize_services_and_agent(repo_path, ingestor)
+        rag_agent, tool_names = initialize_services_and_agent(repo_path, ingestor)
+        prewarm_semantic_model()
         await run_chat_loop(rag_agent, [], project_root, tool_names)
 
 
@@ -1062,7 +960,7 @@ async def main_optimize_async(
     cypher: str | None = None,
     batch_size: int | None = None,
 ) -> None:
-    project_root = _setup_common_initialization(target_repo_path)
+    project_root = setup_common_initialization(target_repo_path)
 
     update_model_settings(orchestrator, cypher)
 

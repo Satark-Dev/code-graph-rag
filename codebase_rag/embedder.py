@@ -1,17 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
-from functools import lru_cache
 from pathlib import Path
+from uuid import uuid4
 
 from loguru import logger
 
 from . import constants as cs
-from . import exceptions as ex
 from . import logs as ls
 from .config import settings
-from .utils.dependencies import has_torch, has_transformers
+from .utils.dependencies import has_pgvector
+from .utils.token_utils import count_tokens
 
 
 class EmbeddingCache:
@@ -72,112 +73,185 @@ class EmbeddingCache:
         return len(self._cache)
 
 
-_embedding_cache: EmbeddingCache | None = None
+_embedding_cache_by_base: dict[Path, EmbeddingCache] = {}
 
 
-def get_embedding_cache() -> EmbeddingCache:
-    global _embedding_cache
-    if _embedding_cache is None:
-        cache_path = Path(settings.QDRANT_DB_PATH) / cs.EMBEDDING_CACHE_FILENAME
-        _embedding_cache = EmbeddingCache(path=cache_path)
-        _embedding_cache.load()
-    return _embedding_cache
+def get_embedding_cache(repo_path: Path | None = None) -> EmbeddingCache:
+    # Use the provided repo_path, or fall back to current directory for CLI/local use.
+    # Deprecated settings.TARGET_REPO_PATH is no longer used.
+    base_path = (repo_path or Path.cwd()).resolve()
+    if base_path not in _embedding_cache_by_base:
+        cache_path = base_path / cs.EMBEDDING_CACHE_FILENAME
+        cache = EmbeddingCache(path=cache_path)
+        cache.load()
+        _embedding_cache_by_base[base_path] = cache
+    return _embedding_cache_by_base[base_path]
 
 
-def clear_embedding_cache() -> None:
-    global _embedding_cache
-    if _embedding_cache is not None:
-        _embedding_cache.clear()
-        _embedding_cache = None
+def clear_embedding_cache(repo_path: Path | None = None) -> None:
+    """
+    Clears the in-memory embedding cache.
+
+    If repo_path is provided, only clears that repo's cache; otherwise clears all caches.
+    """
+    if repo_path is None:
+        _embedding_cache_by_base.clear()
+        return
+    base_path = repo_path.resolve()
+    _embedding_cache_by_base.pop(base_path, None)
 
 
-if has_torch() and has_transformers():
-    import numpy as np
-    import torch
-    from numpy.typing import NDArray
+def _truncate(s: str, max_length: int | None) -> str:
+    if max_length is None:
+        return s
+    ml = int(max_length)
+    if ml <= 0:
+        return s
+    return s[:ml]
 
-    from .unixcoder import UniXcoder
 
-    @lru_cache(maxsize=1)
-    def get_model() -> UniXcoder:
-        model = UniXcoder(cs.UNIXCODER_MODEL)
-        model.eval()
-        if torch.cuda.is_available():
-            model = model.cuda()
-        return model
+def _require_semantic_enabled() -> None:
+    if not has_pgvector():
+        raise RuntimeError(
+            "Semantic search requires 'semantic' extra: uv sync --extra semantic"
+        )
 
-    def embed_code(code: str, max_length: int | None = None) -> list[float]:
-        cache = get_embedding_cache()
-        if (cached := cache.get(code)) is not None:
-            return cached
 
-        if max_length is None:
-            max_length = settings.EMBEDDING_MAX_LENGTH
-        model = get_model()
-        device = next(model.parameters()).device
-        tokens = model.tokenize([code], max_length=max_length)
-        tokens_tensor = torch.tensor(tokens).to(device)
-        with torch.no_grad():
-            _, sentence_embeddings = model(tokens_tensor)
-            embedding: NDArray[np.float32] = sentence_embeddings.cpu().numpy()
-        result: list[float] = embedding[0].tolist()
+def _resolve_openai_embeddings_client_config() -> tuple[str, str]:
+    """
+    Resolve API key + base_url for embeddings requests.
 
-        cache.put(code, result)
-        return result
+    Precedence:
+    - api_key: EMBEDDINGS_API_KEY, then ORCHESTRATOR_API_KEY, then CYPHER_API_KEY
+    - base_url: EMBEDDINGS_ENDPOINT, then ORCHESTRATOR_ENDPOINT, then OPENAI_DEFAULT_ENDPOINT
+    """
+    api_key = (
+        (settings.EMBEDDINGS_API_KEY or "").strip()
+        or (settings.ORCHESTRATOR_API_KEY or "").strip()
+        or (settings.CYPHER_API_KEY or "").strip()
+    )
+    if not api_key:
+        raise ValueError(
+            "Missing API key for embeddings. Set EMBEDDINGS_API_KEY (preferred) "
+            "or ORCHESTRATOR_API_KEY (fallback) in .env."
+        )
 
-    def embed_code_batch(
-        snippets: list[str],
-        max_length: int | None = None,
-        batch_size: int = cs.EMBEDDING_DEFAULT_BATCH_SIZE,
-    ) -> list[list[float]]:
-        if not snippets:
-            return []
+    base_url = (
+        (settings.EMBEDDINGS_ENDPOINT or "").strip()
+        or (settings.ORCHESTRATOR_ENDPOINT or "").strip()
+        or cs.OPENAI_DEFAULT_ENDPOINT
+    )
+    return api_key, base_url
 
-        if max_length is None:
-            max_length = settings.EMBEDDING_MAX_LENGTH
 
-        cache = get_embedding_cache()
-        cached_results = cache.get_many(snippets)
+def _openai_client():
+    from openai import OpenAI
 
-        if len(cached_results) == len(snippets):
-            logger.debug(ls.EMBEDDING_CACHE_HIT, count=len(snippets))
-            return [cached_results[i] for i in range(len(snippets))]
+    api_key, base_url = _resolve_openai_embeddings_client_config()
+    return OpenAI(api_key=api_key, base_url=base_url)
 
-        uncached_indices = [i for i in range(len(snippets)) if i not in cached_results]
-        uncached_snippets = [snippets[i] for i in uncached_indices]
 
-        model = get_model()
-        device = next(model.parameters()).device
+def _best_effort_log_embedding_usage(
+    *,
+    tool_call_id: str,
+    input_texts: list[str],
+) -> None:
+    try:
+        from .observability.hook import observability_hook
 
-        all_new_embeddings: list[list[float]] = []
-        for start in range(0, len(uncached_snippets), batch_size):
-            batch = uncached_snippets[start : start + batch_size]
-            tokens_list = model.tokenize(batch, max_length=max_length, padding=True)
-            tokens_tensor = torch.tensor(tokens_list).to(device)
-            with torch.no_grad():
-                _, sentence_embeddings = model(tokens_tensor)
-                batch_np: NDArray[np.float32] = sentence_embeddings.cpu().numpy()
-            for row in batch_np:
-                all_new_embeddings.append(row.tolist())
+        input_tokens = sum(count_tokens(t) for t in input_texts)
+        coro = observability_hook.log_tool_usage(
+            tool_name="embeddings",
+            tool_call_id=tool_call_id,
+            model_name=settings.EMBEDDINGS_MODEL,
+            input_tokens=int(input_tokens),
+            output_tokens=0,
+        )
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(coro)
+        except RuntimeError:
+            # We are running inside a thread from asyncio.to_thread().
+            # Running asyncio.run(coro) here is unsafe because the underlying
+            # Kafka producer is bound to the main event loop.
+            pass
+    except (ImportError, ValueError) as e:
+        logger.debug("Observability embeddings usage log skipped: {}", e)
+    except Exception as e:
+        logger.debug("Observability embeddings usage log failed: {}", e)
 
-        cache.put_many(uncached_snippets, all_new_embeddings)
 
-        results: list[list[float]] = [[] for _ in snippets]
-        for i, emb in cached_results.items():
-            results[i] = emb
-        for idx, orig_i in enumerate(uncached_indices):
-            results[orig_i] = all_new_embeddings[idx]
+def embed_code(
+    code: str,
+    max_length: int | None = None,
+    *,
+    repo_path: Path | None = None,
+    cache: EmbeddingCache | None = None,
+) -> list[float]:
+    _require_semantic_enabled()
 
-        return results
+    cache = cache or get_embedding_cache(repo_path=repo_path)
+    if (cached := cache.get(code)) is not None:
+        return cached
 
-else:
+    client = _openai_client()
+    snippet = _truncate(code, max_length or settings.EMBEDDING_MAX_LENGTH)
+    resp = client.embeddings.create(model=settings.EMBEDDINGS_MODEL, input=snippet)
+    embedding = list(resp.data[0].embedding)
+    cache.put(code, embedding)
 
-    def embed_code(code: str, max_length: int | None = None) -> list[float]:
-        raise RuntimeError(ex.SEMANTIC_EXTRA)
+    _best_effort_log_embedding_usage(
+        tool_call_id=f"emb_{uuid4().hex}",
+        input_texts=[snippet],
+    )
+    return embedding
 
-    def embed_code_batch(
-        snippets: list[str],
-        max_length: int | None = None,
-        batch_size: int = cs.EMBEDDING_DEFAULT_BATCH_SIZE,
-    ) -> list[list[float]]:
-        raise RuntimeError(ex.SEMANTIC_EXTRA)
+
+def embed_code_batch(
+    snippets: list[str],
+    max_length: int | None = None,
+    batch_size: int = cs.EMBEDDING_DEFAULT_BATCH_SIZE,
+    *,
+    repo_path: Path | None = None,
+    cache: EmbeddingCache | None = None,
+) -> list[list[float]]:
+    _require_semantic_enabled()
+
+    if not snippets:
+        return []
+
+    cache = cache or get_embedding_cache(repo_path=repo_path)
+    cached_results = cache.get_many(snippets)
+    if len(cached_results) == len(snippets):
+        logger.debug(ls.EMBEDDING_CACHE_HIT, count=len(snippets))
+        return [cached_results[i] for i in range(len(snippets))]
+
+    ml = max_length or settings.EMBEDDING_MAX_LENGTH
+    uncached_indices = [i for i in range(len(snippets)) if i not in cached_results]
+    uncached_snippets = [_truncate(snippets[i], ml) for i in uncached_indices]
+
+    client = _openai_client()
+    all_new_embeddings: list[list[float]] = []
+    for start in range(0, len(uncached_snippets), int(batch_size)):
+        batch = uncached_snippets[start : start + int(batch_size)]
+        resp = client.embeddings.create(model=settings.EMBEDDINGS_MODEL, input=batch)
+        # API returns data in the same order as inputs
+        all_new_embeddings.extend([list(d.embedding) for d in resp.data])
+
+    cache.put_many([snippets[i] for i in uncached_indices], all_new_embeddings)
+    _best_effort_log_embedding_usage(
+        tool_call_id=f"emb_batch_{uuid4().hex}",
+        input_texts=uncached_snippets,
+    )
+
+    results: list[list[float]] = [[] for _ in snippets]
+    for i, emb in cached_results.items():
+        results[i] = emb
+    for idx, orig_i in enumerate(uncached_indices):
+        results[orig_i] = all_new_embeddings[idx]
+    return results
+
+
+def prewarm_embeddings() -> None:
+    # No local model to prewarm; validate config early.
+    _ = _openai_client()

@@ -139,7 +139,7 @@ class TestReadFileLargeFiles:
     """Test memory efficiency with large files."""
 
     async def test_read_middle_of_large_file(
-        self, mcp_registry: MCPToolsRegistry, large_file: Path
+        self, mcp_registry: MCPToolsRegistry, _large_file: Path
     ) -> None:
         """Test reading from middle of large file doesn't load entire file."""
         result = await mcp_registry.read_file("large_file.txt", offset=5000, limit=10)
@@ -152,7 +152,7 @@ class TestReadFileLargeFiles:
         assert "line 10000" not in result
 
     async def test_read_last_lines_of_large_file(
-        self, mcp_registry: MCPToolsRegistry, large_file: Path
+        self, mcp_registry: MCPToolsRegistry, _large_file: Path
     ) -> None:
         """Test reading last few lines of large file."""
         result = await mcp_registry.read_file("large_file.txt", offset=9995, limit=10)

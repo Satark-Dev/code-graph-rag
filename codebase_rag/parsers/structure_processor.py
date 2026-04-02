@@ -46,43 +46,76 @@ class StructureProcessor:
             return (cs.NodeLabel.PACKAGE, cs.KEY_QUALIFIED_NAME, parent_container_qn)
         return (cs.NodeLabel.FOLDER, cs.KEY_PATH, parent_rel_path.as_posix())
 
-    def identify_structure(self) -> None:
-        directories = {self.repo_path}
-        for path in self.repo_path.rglob(cs.GLOB_ALL):
-            if path.is_dir() and not should_skip_path(
-                path,
-                self.repo_path,
-                exclude_paths=self.exclude_paths,
-                unignore_paths=self.unignore_paths,
-            ):
-                directories.add(path)
+    def _should_keep_dir(self, dirname: str, dir_prefix: str) -> bool:
+        if dirname not in cs.IGNORE_PATTERNS and (
+            not self.exclude_paths or dirname not in self.exclude_paths
+        ):
+            return True
+        return bool(
+            self.unignore_paths
+            and any(
+                u.startswith(f"{dir_prefix}{dirname}/") or u == f"{dir_prefix}{dirname}"
+                for u in self.unignore_paths
+            )
+        )
 
+    def identify_structure(self, collect_files: bool = False) -> list[Path]:
+        eligible_files: list[Path] = []
+        # We start with the repo root. Note that os.walk will yield it first.
+        directories = {self.repo_path}
+        package_indicators: set[str] = set()
+
+        for lang_queries in self.queries.values():
+            lang_config = lang_queries[cs.QUERY_CONFIG]
+            package_indicators.update(lang_config.package_indicators)
+
+        # Map to store if a directory is a package, populated during traversal
+        is_package_dir: dict[Path, bool] = {}
+
+        import os
+
+        for dirpath, dirnames, filenames in os.walk(str(self.repo_path)):
+            root = Path(dirpath)
+            relative_root = root.relative_to(self.repo_path)
+            rel_dir_str = relative_root.as_posix()
+            dir_prefix = "" if rel_dir_str == "." else f"{rel_dir_str}/"
+
+            # 1. Identify if this root is a package
+            is_package_dir[root] = any(f in package_indicators for f in filenames)
+
+            # 2. Prune directories for the walk
+            dirnames[:] = sorted(
+                [d for d in dirnames if self._should_keep_dir(d, dir_prefix)]
+            )
+            for d in dirnames:
+                directories.add(root / d)
+
+            # 3. Optionally collect files (Pass 2 consolidation)
+            if collect_files:
+                for fname in sorted(filenames):
+                    if fname == cs.HASH_CACHE_FILENAME:
+                        continue
+                    filepath = root / fname
+                    if not should_skip_path(
+                        filepath,
+                        self.repo_path,
+                        exclude_paths=self.exclude_paths,
+                        unignore_paths=self.unignore_paths,
+                    ):
+                        eligible_files.append(filepath)
+
+        # Process the collected directories in order
         for root in sorted(directories):
             relative_root = root.relative_to(self.repo_path)
-
             parent_rel_path = relative_root.parent
             parent_container_qn = self.structural_elements.get(parent_rel_path)
 
-            is_package = False
-            package_indicators: set[str] = set()
-
-            for lang_queries in self.queries.values():
-                lang_config = lang_queries[cs.QUERY_CONFIG]
-                package_indicators.update(lang_config.package_indicators)
-
-            for indicator in package_indicators:
-                if (root / indicator).exists():
-                    is_package = True
-                    break
-
-            if is_package:
+            if is_package_dir.get(root, False):
                 package_qn = cs.SEPARATOR_DOT.join(
                     [self.project_name] + list(relative_root.parts)
                 )
                 self.structural_elements[relative_root] = package_qn
-                logger.info(
-                    logs.STRUCT_IDENTIFIED_PACKAGE.format(package_qn=package_qn)
-                )
+                logger.info(logs.STRUCT_IDENTIFIED_PACKAGE.format(package_qn=package_qn))
                 self.ingestor.ensure_node_batch(
                     cs.NodeLabel.PACKAGE,
                     {
@@ -121,6 +154,8 @@ class StructureProcessor:
                     cs.RelationshipType.CONTAINS_FOLDER,
                     (cs.NodeLabel.FOLDER, cs.KEY_PATH, relative_root.as_posix()),
                 )
+
+        return eligible_files
 
     def process_generic_file(self, file_path: Path, file_name: str) -> None:
         relative_filepath = file_path.relative_to(self.repo_path).as_posix()

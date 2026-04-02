@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Callable
+from dataclasses import dataclass
 from importlib.metadata import version as get_version
 from pathlib import Path
 
@@ -11,24 +12,18 @@ from rich.table import Table
 from . import cli_help as ch
 from . import constants as cs
 from . import logs as ls
+from .bootstrap import connect_memgraph, update_model_settings
 from .config import load_cgrignore_patterns, settings
+from .context import app_context
+from .graph_export import export_graph_to_file, prompt_for_unignored_directories
 from .graph_updater import GraphUpdater
-from .main import (
-    app_context,
-    connect_memgraph,
-    export_graph_to_file,
-    main_async,
-    main_optimize_async,
-    main_single_query,
-    prompt_for_unignored_directories,
-    style,
-    update_model_settings,
-)
+from .main import main_async, main_optimize_async, main_single_query
 from .parser_loader import load_parsers
 from .services.protobuf_service import ProtobufFileIngestor
 from .tools.health_checker import HealthChecker
-from .tools.language import cli as language_cli
+from .tools.language import cli as language_click_app
 from .types_defs import ResultRow
+from .ui import style
 
 app = typer.Typer(
     name=cs.PACKAGE_NAME,
@@ -99,6 +94,109 @@ def _info(msg: str) -> None:
     if not settings.QUIET:
         app_context.console.print(msg)
 
+
+def _error_and_exit(
+    msg: str,
+    *,
+    code: int = 1,
+    hint: str | None = None,
+) -> None:
+    app_context.console.print(style(msg, cs.Color.RED))
+    if hint:
+        _info(style(hint, cs.Color.YELLOW))
+    raise typer.Exit(code)
+
+
+def _resolve_exclusions(
+    *,
+    repo_path: Path,
+    exclude: list[str] | None,
+    interactive_setup: bool,
+) -> tuple[frozenset[str] | None, frozenset[str] | None]:
+    cgrignore = load_cgrignore_patterns(repo_path)
+    cli_excludes = frozenset(exclude) if exclude else frozenset()
+    exclude_paths = cli_excludes | cgrignore.exclude or None
+
+    if interactive_setup:
+        unignore_paths = prompt_for_unignored_directories(repo_path, exclude)
+    else:
+        _info(style(cs.CLI_MSG_AUTO_EXCLUDE, cs.Color.YELLOW))
+        unignore_paths = cgrignore.unignore or None
+
+    return exclude_paths, unignore_paths
+
+
+def _run_clean_only(*, repo_path: Path, batch_size: int) -> None:
+    with connect_memgraph(batch_size) as ingestor:
+        _info(style(cs.CLI_MSG_CLEANING_DB, cs.Color.YELLOW))
+        ingestor.clean_database()
+
+    _delete_hash_cache(repo_path)
+    _info(style(cs.CLI_MSG_CLEAN_DONE, cs.Color.GREEN))
+
+
+def _run_update_graph(
+    *,
+    repo_path: Path,
+    batch_size: int,
+    exclude: list[str] | None,
+    interactive_setup: bool,
+    project_name: str | None,
+    clean: bool,
+    output: str | None,
+) -> None:
+    _info(style(cs.CLI_MSG_UPDATING_GRAPH.format(path=repo_path), cs.Color.GREEN))
+
+    exclude_paths, unignore_paths = _resolve_exclusions(
+        repo_path=repo_path,
+        exclude=exclude,
+        interactive_setup=interactive_setup,
+    )
+
+    with connect_memgraph(batch_size) as ingestor:
+        if clean:
+            _info(style(cs.CLI_MSG_CLEANING_DB, cs.Color.YELLOW))
+            ingestor.clean_database()
+            _delete_hash_cache(repo_path)
+
+        ingestor.ensure_constraints()
+
+        parsers, queries = load_parsers()
+
+        updater = GraphUpdater(
+            ingestor=ingestor,
+            repo_path=repo_path,
+            parsers=parsers,
+            queries=queries,
+            unignore_paths=unignore_paths,
+            exclude_paths=exclude_paths,
+            project_name=project_name,
+        )
+        updater.run()
+
+        if output:
+            _info(style(cs.CLI_MSG_EXPORTING_TO.format(path=output), cs.Color.CYAN))
+            if not export_graph_to_file(ingestor, output):
+                raise typer.Exit(1)
+
+    _info(style(cs.CLI_MSG_GRAPH_UPDATED, cs.Color.GREEN))
+
+
+def _run_chat(
+    *,
+    target_repo_path: str,
+    batch_size: int,
+    ask_agent: str | None,
+) -> None:
+    try:
+        if ask_agent:
+            main_single_query(target_repo_path, batch_size, ask_agent)
+        else:
+            asyncio.run(main_async(target_repo_path, batch_size))
+    except KeyboardInterrupt:
+        app_context.console.print(style(cs.CLI_MSG_APP_TERMINATED, cs.Color.RED))
+    except ValueError as e:
+        app_context.console.print(style(cs.CLI_ERR_STARTUP.format(error=e), cs.Color.RED))
 
 def _delete_hash_cache(repo_path: Path) -> None:
     cache_path = repo_path / cs.HASH_CACHE_FILENAME
@@ -178,84 +276,36 @@ def start(
 ) -> None:
     app_context.session.confirm_edits = not no_confirm
 
-    target_repo_path = repo_path or settings.TARGET_REPO_PATH
+    target_repo_path = repo_path or "."
 
     if output and not update_graph:
-        app_context.console.print(
-            style(cs.CLI_ERR_OUTPUT_REQUIRES_UPDATE, cs.Color.RED)
-        )
-        raise typer.Exit(1)
+        _error_and_exit(cs.CLI_ERR_OUTPUT_REQUIRES_UPDATE)
 
     effective_batch_size = settings.resolve_batch_size(batch_size)
 
     if clean and not update_graph:
-        repo_to_clean = Path(target_repo_path)
-        with connect_memgraph(effective_batch_size) as ingestor:
-            _info(style(cs.CLI_MSG_CLEANING_DB, cs.Color.YELLOW))
-            ingestor.clean_database()
-
-        _delete_hash_cache(repo_to_clean)
-        _info(style(cs.CLI_MSG_CLEAN_DONE, cs.Color.GREEN))
+        _run_clean_only(repo_path=Path(target_repo_path), batch_size=effective_batch_size)
         return
 
     _update_and_validate_models(orchestrator, cypher)
 
     if update_graph:
-        repo_to_update = Path(target_repo_path)
-        _info(
-            style(cs.CLI_MSG_UPDATING_GRAPH.format(path=repo_to_update), cs.Color.GREEN)
+        _run_update_graph(
+            repo_path=Path(target_repo_path),
+            batch_size=effective_batch_size,
+            exclude=exclude,
+            interactive_setup=interactive_setup,
+            project_name=project_name,
+            clean=clean,
+            output=output,
         )
-
-        cgrignore = load_cgrignore_patterns(repo_to_update)
-        cli_excludes = frozenset(exclude) if exclude else frozenset()
-        exclude_paths = cli_excludes | cgrignore.exclude or None
-        unignore_paths: frozenset[str] | None = None
-        if interactive_setup:
-            unignore_paths = prompt_for_unignored_directories(repo_to_update, exclude)
-        else:
-            _info(style(cs.CLI_MSG_AUTO_EXCLUDE, cs.Color.YELLOW))
-            unignore_paths = cgrignore.unignore or None
-
-        with connect_memgraph(effective_batch_size) as ingestor:
-            if clean:
-                _info(style(cs.CLI_MSG_CLEANING_DB, cs.Color.YELLOW))
-                ingestor.clean_database()
-                _delete_hash_cache(repo_to_update)
-
-            ingestor.ensure_constraints()
-
-            parsers, queries = load_parsers()
-
-            updater = GraphUpdater(
-                ingestor=ingestor,
-                repo_path=repo_to_update,
-                parsers=parsers,
-                queries=queries,
-                unignore_paths=unignore_paths,
-                exclude_paths=exclude_paths,
-                project_name=project_name,
-            )
-            updater.run()
-
-            if output:
-                _info(style(cs.CLI_MSG_EXPORTING_TO.format(path=output), cs.Color.CYAN))
-                if not export_graph_to_file(ingestor, output):
-                    raise typer.Exit(1)
-
-        _info(style(cs.CLI_MSG_GRAPH_UPDATED, cs.Color.GREEN))
         return
 
-    try:
-        if ask_agent:
-            main_single_query(target_repo_path, effective_batch_size, ask_agent)
-        else:
-            asyncio.run(main_async(target_repo_path, effective_batch_size))
-    except KeyboardInterrupt:
-        app_context.console.print(style(cs.CLI_MSG_APP_TERMINATED, cs.Color.RED))
-    except ValueError as e:
-        app_context.console.print(
-            style(cs.CLI_ERR_STARTUP.format(error=e), cs.Color.RED)
-        )
+    _run_chat(
+        target_repo_path=target_repo_path,
+        batch_size=effective_batch_size,
+        ask_agent=ask_agent,
+    )
 
 
 @app.command(help=ch.CMD_INDEX)
@@ -285,21 +335,17 @@ def index(
         help=ch.HELP_INTERACTIVE_SETUP,
     ),
 ) -> None:
-    target_repo_path = repo_path or settings.TARGET_REPO_PATH
+    target_repo_path = repo_path or "."
     repo_to_index = Path(target_repo_path)
     _info(style(cs.CLI_MSG_INDEXING_AT.format(path=repo_to_index), cs.Color.GREEN))
 
     _info(style(cs.CLI_MSG_OUTPUT_TO.format(path=output_proto_dir), cs.Color.CYAN))
 
-    cgrignore = load_cgrignore_patterns(repo_to_index)
-    cli_excludes = frozenset(exclude) if exclude else frozenset()
-    exclude_paths = cli_excludes | cgrignore.exclude or None
-    unignore_paths: frozenset[str] | None = None
-    if interactive_setup:
-        unignore_paths = prompt_for_unignored_directories(repo_to_index, exclude)
-    else:
-        _info(style(cs.CLI_MSG_AUTO_EXCLUDE, cs.Color.YELLOW))
-        unignore_paths = cgrignore.unignore or None
+    exclude_paths, unignore_paths = _resolve_exclusions(
+        repo_path=repo_to_index,
+        exclude=exclude,
+        interactive_setup=interactive_setup,
+    )
 
     try:
         ingestor = ProtobufFileIngestor(
@@ -400,7 +446,7 @@ def optimize(
 ) -> None:
     app_context.session.confirm_edits = not no_confirm
 
-    target_repo_path = repo_path or settings.TARGET_REPO_PATH
+    target_repo_path = repo_path or "."
 
     _update_and_validate_models(orchestrator, cypher)
 
@@ -445,10 +491,10 @@ def mcp_server(
     except KeyboardInterrupt:
         app_context.console.print(style(cs.CLI_MSG_APP_TERMINATED, cs.Color.RED))
     except ValueError as e:
-        app_context.console.print(
-            style(cs.CLI_ERR_CONFIG.format(error=e), cs.Color.RED)
+        _error_and_exit(
+            cs.CLI_ERR_CONFIG.format(error=e),
+            hint=cs.CLI_MSG_HINT_TARGET_REPO,
         )
-        _info(style(cs.CLI_MSG_HINT_TARGET_REPO, cs.Color.YELLOW))
     except Exception as e:
         app_context.console.print(
             style(cs.CLI_ERR_MCP_SERVER.format(error=e), cs.Color.RED)
@@ -493,7 +539,14 @@ def graph_loader_command(
     context_settings={"allow_extra_args": True, "allow_interspersed_args": False},
 )
 def language_command(ctx: typer.Context) -> None:
-    language_cli(ctx.args, standalone_mode=False)
+    try:
+        language_click_app.main(
+            args=list(ctx.args),
+            prog_name=f"{cs.PACKAGE_NAME} {ch.CLICommandName.LANGUAGE}",
+            standalone_mode=False,
+        )
+    except SystemExit as e:
+        raise typer.Exit(e.code) from e
 
 
 @app.command(name=ch.CLICommandName.DOCTOR, help=ch.CMD_DOCTOR)
@@ -612,6 +665,100 @@ def stats() -> None:
         )
         logger.exception(ls.STATS_ERROR.format(error=e))
         raise typer.Exit(1) from e
+
+
+@app.command(name=ch.CLICommandName.CONSUMERS, help=ch.CMD_CONSUMERS)
+def consumers(
+    no_confirm: bool = typer.Option(
+        False,
+        "--no-confirm",
+        help=ch.HELP_NO_CONFIRM,
+    ),
+    no_kafka_consumers: bool = typer.Option(
+        False,
+        "--no-kafka-consumers",
+        help=ch.HELP_NO_EMBEDDED_KAFKA_CONSUMERS,
+    ),
+    no_kafka_index_consumer: bool = typer.Option(
+        False,
+        "--no-kafka-index-consumer",
+        help=ch.HELP_NO_EMBEDDED_KAFKA_INDEX_CONSUMER,
+    ),
+    no_kafka_chat_consumer: bool = typer.Option(
+        False,
+        "--no-kafka-chat-consumer",
+        help=ch.HELP_NO_EMBEDDED_KAFKA_CHAT_CONSUMER,
+    ),
+) -> None:
+    """
+    Run embedded Kafka consumers without starting an HTTP server.
+    """
+    import os
+    import signal
+
+    @dataclass(frozen=True)
+    class _ConsumersEnvConfig:
+        no_confirm: bool
+        no_kafka_consumers: bool
+        no_kafka_index_consumer: bool
+        no_kafka_chat_consumer: bool
+
+        def apply(self) -> None:
+            if self.no_confirm:
+                os.environ["CGR_NO_CONFIRM"] = "1"
+            if self.no_kafka_consumers:
+                os.environ["CGR_EMBEDDED_KAFKA_CONSUMERS"] = "0"
+            elif self.no_kafka_index_consumer:
+                os.environ["CGR_EMBEDDED_KAFKA_INDEX_CONSUMERS"] = "0"
+            if not self.no_kafka_consumers and self.no_kafka_chat_consumer:
+                os.environ["CGR_EMBEDDED_KAFKA_CHAT_CONSUMERS"] = "0"
+
+    _ConsumersEnvConfig(
+        no_confirm=no_confirm,
+        no_kafka_consumers=no_kafka_consumers,
+        no_kafka_index_consumer=no_kafka_index_consumer,
+        no_kafka_chat_consumer=no_kafka_chat_consumer,
+    ).apply()
+
+    # Run Kafka-only consumer runner and block.
+    from .api import run_kafka_consumers_until
+
+    app_context.console.print(
+        style("Starting embedded Kafka consumers...", cs.Color.GREEN)
+    )
+
+    stop = False
+
+    def _handle(_sig: int, _frame: object | None = None) -> None:
+        nonlocal stop
+        stop = True
+
+    signal.signal(signal.SIGINT, _handle)
+    signal.signal(signal.SIGTERM, _handle)
+
+    try:
+        import anyio
+    except ImportError:
+        app_context.console.print(
+            style(
+                "anyio is not installed. Please install it using your project dependencies.",
+                cs.Color.RED,
+            )
+        )
+        raise typer.Exit(1)
+
+    async def _run() -> None:
+        nonlocal stop
+        import asyncio
+
+        stop_event = asyncio.Event()
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(run_kafka_consumers_until, stop_event)
+            while not stop:
+                await anyio.sleep(0.2)
+            stop_event.set()
+
+    anyio.run(_run)
 
 
 if __name__ == "__main__":

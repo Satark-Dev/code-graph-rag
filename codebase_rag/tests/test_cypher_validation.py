@@ -55,7 +55,10 @@ class TestBuildKeywordPattern:
     def test_all_dangerous_keywords_produce_valid_patterns(self) -> None:
         for kw in cs.CYPHER_DANGEROUS_KEYWORDS:
             pattern = _build_keyword_pattern(kw)
-            assert pattern.search(kw) is not None
+            if kw.upper() == "CALL":
+                assert pattern.search("CALL db.labels()") is not None
+            else:
+                assert pattern.search(kw) is not None
 
 
 class TestValidateCypherReadOnly:
@@ -153,6 +156,19 @@ class TestValidateCypherReadOnly:
     def test_rejects_call(self) -> None:
         with pytest.raises(ex.LLMGenerationError, match="CALL"):
             _validate_cypher_read_only("CALL db.schema.visualization();")
+
+    def test_does_not_flag_call_variable_name(self) -> None:
+        _validate_cypher_read_only(
+            "\n".join(
+                [
+                    "MATCH (f:File)",
+                    "MATCH (fn)-[:CALLS]->(call:Function)",
+                    "WITH f, fn, call",
+                    "MATCH (fn)-[:CALLS]->(callee:Function)",
+                    "RETURN callee;",
+                ]
+            )
+        )
 
     def test_rejects_create_constraint(self) -> None:
         with pytest.raises(ex.LLMGenerationError, match="CREATE CONSTRAINT"):

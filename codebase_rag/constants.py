@@ -153,7 +153,6 @@ V1_PATH = "/v1"
 # (H) HTTP status codes
 HTTP_OK = 200
 
-UNIXCODER_MODEL = "microsoft/unixcoder-base"
 EMBEDDING_DEFAULT_BATCH_SIZE = 32
 EMBEDDING_CACHE_FILENAME = ".embedding_cache.json"
 
@@ -248,10 +247,7 @@ CLI_MSG_EXPORTING_DATA = "Exporting graph data..."
 CLI_MSG_OPTIMIZATION_TERMINATED = "\nOptimization session terminated by user."
 CLI_MSG_MCP_TERMINATED = "\nMCP server terminated by user."
 PACKAGE_NAME = "code-graph-rag"
-CLI_MSG_VERSION = "{package} version {version}"
-CLI_MSG_HINT_TARGET_REPO = (
-    "\nHint: Make sure TARGET_REPO_PATH environment variable is set."
-)
+CLI_MSG_VERSION = f"{PACKAGE_NAME} version {{version}}"
 CLI_MSG_GRAPH_SUMMARY = "Graph Summary:"
 CLI_MSG_CONNECTING_STATS = "Fetching graph statistics..."
 CLI_STATS_NODE_TITLE = "Node Statistics"
@@ -266,6 +262,10 @@ CLI_ERR_STATS_FAILED = "Failed to get graph statistics: {error}"
 CLI_MSG_AUTO_EXCLUDE = (
     "Auto-excluding common directories (venv, node_modules, .git, etc.). "
     "Use --interactive-setup to customize."
+)
+CLI_MSG_HINT_TARGET_REPO = (
+    "Hint: set TARGET_REPO_PATH to your repository path "
+    "(or pass the repo path option for the command you're running)."
 )
 
 UI_DIFF_FILE_HEADER = "[bold cyan]File: {path}[/bold cyan]"
@@ -702,7 +702,6 @@ TABLE_ROW_OLLAMA_ENDPOINT = "Ollama Endpoint"
 TABLE_ROW_OLLAMA_ORCHESTRATOR = "Ollama Endpoint (Orchestrator)"
 TABLE_ROW_OLLAMA_CYPHER = "Ollama Endpoint (Cypher)"
 TABLE_ROW_EDIT_CONFIRMATION = "Edit Confirmation"
-TABLE_ROW_TARGET_REPOSITORY = "Target Repository"
 
 # (H) UI status messages
 MSG_CONNECTED_MEMGRAPH = "Successfully connected to Memgraph."
@@ -840,7 +839,7 @@ IGNORE_PATTERNS = frozenset(
         ".nyc_output",
         ".pnpm-store",
         ".pytest_cache",
-        ".qdrant_code_embeddings",
+        ".pgvector_code_embeddings",
         ".ruff_cache",
         ".svn",
         ".tmp",
@@ -997,23 +996,9 @@ REGEX_FINAL_METHOD_CAPTURE = r"\.([^.()]+)$"
 DEFAULT_NAME = "Unknown"
 TEXT_UNKNOWN = "unknown"
 
-MODULE_TORCH = "torch"
-MODULE_TRANSFORMERS = "transformers"
-MODULE_QDRANT_CLIENT = "qdrant_client"
-
-SEMANTIC_DEPENDENCIES = (MODULE_QDRANT_CLIENT, MODULE_TORCH, MODULE_TRANSFORMERS)
-ML_DEPENDENCIES = (MODULE_TORCH, MODULE_TRANSFORMERS)
-
-
-class UniXcoderMode(StrEnum):
-    ENCODER_ONLY = "<encoder-only>"
-    DECODER_ONLY = "<decoder-only>"
-    ENCODER_DECODER = "<encoder-decoder>"
-
-
-UNIXCODER_MASK_TOKEN = "<mask0>"
-UNIXCODER_BUFFER_BIAS = "bias"
-UNIXCODER_MAX_CONTEXT = 1024
+MODULE_PGVECTOR = "pgvector"
+MODULE_PSYCOPG = "psycopg"
+SEMANTIC_DEPENDENCIES = (MODULE_PGVECTOR, MODULE_PSYCOPG)
 
 REL_TYPE_CALLS = "CALLS"
 
@@ -1055,6 +1040,7 @@ GREP_SUGGESTION = " Use 'rg' instead of 'grep' for text searching."
 
 # (H) Shell command constants
 SHELL_CMD_GREP = "grep"
+SHELL_CMD_RG = "rg"
 SHELL_CMD_GIT = "git"
 SHELL_CMD_RM = "rm"
 SHELL_RM_RF_FLAG = "-rf"
@@ -2214,6 +2200,7 @@ TS_PY_LIST_COMPREHENSION = "list_comprehension"
 TS_PY_FOR_STATEMENT = "for_statement"
 TS_PY_FOR_IN_CLAUSE = "for_in_clause"
 TS_PY_ASSIGNMENT = "assignment"
+TS_PY_TYPE_ASSIGNMENT = "type_assignment"
 TS_PY_CLASS_DEFINITION = "class_definition"
 TS_PY_BLOCK = "block"
 TS_PY_FUNCTION_DEFINITION = "function_definition"

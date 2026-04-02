@@ -1,7 +1,7 @@
+from __future__ import annotations
+
 import hashlib
 import json
-import os
-import sys
 from collections import OrderedDict, defaultdict
 from collections.abc import Callable, ItemsView, KeysView
 from pathlib import Path
@@ -28,10 +28,268 @@ from .types_defs import (
 )
 from .utils.dependencies import has_semantic_dependencies
 from .utils.fqn_resolver import find_function_source_by_fqn
-from .utils.path_utils import should_skip_path
-from .utils.source_extraction import extract_source_with_fallback
+from .utils.source_extraction import SourceFileCache, extract_source_with_fallback
 
 type FileHashCache = dict[str, str]
+
+
+
+
+
+class EmbeddingGenerator:
+    def __init__(
+        self,
+        ingestor: IngestorProtocol,
+        repo_path: Path,
+        project_name: str,
+        ast_cache: BoundedASTCache,
+        source_cache: SourceFileCache,
+    ) -> None:
+        self.ingestor = ingestor
+        self.repo_path = repo_path
+        self.project_name = project_name
+        self.ast_cache = ast_cache
+        self.source_cache = source_cache
+
+    def generate(self) -> None:
+        if not has_semantic_dependencies():
+            logger.info(ls.SEMANTIC_NOT_AVAILABLE)
+            return
+
+        if not isinstance(self.ingestor, QueryProtocol):
+            logger.info(ls.INGESTOR_NO_QUERY)
+            return
+
+        try:
+            from .embedder import clear_embedding_cache, get_embedding_cache
+            from .vector_store import (
+                close_pgvector_client,
+                store_embedding_batch,
+                verify_stored_ids,
+            )
+
+            # Ensure we start with a clean embedding cache state for this repository.
+            clear_embedding_cache(self.repo_path)
+            get_embedding_cache(self.repo_path)
+
+            logger.info(ls.PASS_4_EMBEDDINGS)
+
+            results = self.ingestor.fetch_all(
+                cs.CYPHER_QUERY_EMBEDDINGS, {"project_name": self.project_name}
+            )
+
+            if not results:
+                logger.info(ls.NO_FUNCTIONS_FOR_EMBEDDING)
+                return
+
+            logger.info(ls.GENERATING_EMBEDDINGS, count=len(results))
+
+            embedded_count = 0
+            expected_ids: set[int] = set()
+            batch_buffer: list[tuple[int, list[float], str]] = []
+            pgvector_batch_size = settings.PGVECTOR_BATCH_SIZE
+            embedding_batch_size = settings.EMBEDDING_BATCH_SIZE
+            pending: list[tuple[int, str, str]] = []
+
+            for row in results:
+                parsed = self._parse_embedding_result(row)
+                if parsed is None:
+                    continue
+
+                node_id = parsed[cs.KEY_NODE_ID]
+                qualified_name = parsed[cs.KEY_QUALIFIED_NAME]
+                start_line = parsed.get(cs.KEY_START_LINE)
+                end_line = parsed.get(cs.KEY_END_LINE)
+                file_path = parsed.get(cs.KEY_PATH)
+
+                if start_line is None or end_line is None or file_path is None:
+                    logger.debug(ls.NO_SOURCE_FOR, name=qualified_name)
+                    continue
+
+                if source_code := self._extract_source_code(
+                    qualified_name, file_path, start_line, end_line
+                ):
+                    # (H) Prepend structural context to improve semantic search accuracy
+                    contextual_code = f"Qualified Name: {qualified_name}\nFile: {file_path}\n\n{source_code}"
+                    pending.append((node_id, qualified_name, contextual_code))
+                    expected_ids.add(node_id)
+                    if len(pending) >= embedding_batch_size:
+                        embedded_count += self._flush_semantic_batch(
+                            pending,
+                            batch_buffer,
+                            pgvector_batch_size,
+                            embedding_batch_size,
+                        )
+
+                    if (
+                        embedded_count % settings.EMBEDDING_PROGRESS_INTERVAL == 0
+                        and embedded_count > 0
+                    ):
+                        logger.debug(
+                            ls.EMBEDDING_PROGRESS,
+                            done=embedded_count,
+                            total=len(results),
+                        )
+                else:
+                    logger.debug(ls.NO_SOURCE_FOR, name=qualified_name)
+
+            if pending:
+                embedded_count += self._flush_semantic_batch(
+                    pending, batch_buffer, pgvector_batch_size, embedding_batch_size
+                )
+
+            if batch_buffer:
+                embedded_count += store_embedding_batch(batch_buffer)
+
+            logger.info(ls.EMBEDDINGS_COMPLETE, count=embedded_count)
+
+            self._reconcile_embeddings(expected_ids, verify_stored_ids)
+
+            get_embedding_cache(self.repo_path).save()
+            close_pgvector_client()
+
+        except (AttributeError, ValueError, OSError, RuntimeError) as e:
+            logger.error(ls.EMBEDDING_GENERATION_FAILED, error=e)
+            raise
+        except Exception:
+            logger.exception(ls.EMBEDDING_GENERATION_FAILED_UNEXPECTED)
+            raise
+
+    def _flush_semantic_batch(
+        self,
+        pending: list[tuple[int, str, str]],
+        batch_buffer: list[tuple[int, list[float], str]],
+        pgvector_batch_size: int,
+        embedding_batch_size: int,
+    ) -> int:
+        from .embedder import embed_code, embed_code_batch
+        from .vector_store import store_embedding_batch
+
+        if not pending:
+            return 0
+
+        embedded_count_inc = 0
+        snippets = [item[2] for item in pending]
+
+        try:
+            embeddings = embed_code_batch(
+                snippets,
+                max_length=settings.EMBEDDING_MAX_LENGTH,
+                batch_size=embedding_batch_size,
+                repo_path=self.repo_path,
+            )
+        except (ValueError, RuntimeError) as e:
+            logger.warning(ls.EMBEDDING_FAILED, name="batch", error=e)
+            embeddings = []
+            for _, qn, snippet in pending:
+                try:
+                    embeddings.append(
+                        embed_code(
+                            snippet,
+                            max_length=settings.EMBEDDING_MAX_LENGTH,
+                            repo_path=self.repo_path,
+                        )
+                    )
+                except (ValueError, RuntimeError) as embed_err:
+                    logger.warning(ls.EMBEDDING_FAILED, name=qn, error=embed_err)
+                    embeddings.append(None)
+                except Exception:
+                    logger.exception(ls.EMBEDDING_UNEXPECTED_FAILURE, name=qn)
+                    embeddings.append(None)
+
+        for (node_id, qualified_name, _), embedding in zip(pending, embeddings):
+            if embedding is None:
+                continue
+            batch_buffer.append((node_id, embedding, qualified_name))
+
+        pending.clear()
+
+        if len(batch_buffer) >= pgvector_batch_size:
+            embedded_count_inc += store_embedding_batch(batch_buffer)
+            batch_buffer.clear()
+
+        return embedded_count_inc
+
+    def _reconcile_embeddings(
+        self,
+        expected_ids: set[int],
+        verify_fn: Callable[[set[int]], set[int]],
+    ) -> None:
+        if not expected_ids:
+            return
+        try:
+            stored_ids = verify_fn(expected_ids)
+            missing = expected_ids - stored_ids
+            if missing:
+                sample = sorted(missing)[:10]
+                logger.warning(
+                    ls.EMBEDDING_RECONCILE_MISSING.format(
+                        missing=len(missing),
+                        expected=len(expected_ids),
+                        sample_ids=sample,
+                    )
+                )
+            else:
+                logger.info(ls.EMBEDDING_RECONCILE_OK.format(count=len(expected_ids)))
+        except (ValueError, RuntimeError, KeyError) as e:
+            logger.warning(ls.EMBEDDING_RECONCILE_FAILED.format(error=e))
+        except Exception:
+            logger.exception(ls.EMBEDDING_RECONCILE_UNEXPECTED)
+
+    def _extract_source_code(
+        self, qualified_name: str, file_path: str, start_line: int, end_line: int
+    ) -> str | None:
+        if not file_path or not start_line or not end_line:
+            return None
+
+        file_path_obj = self.repo_path / file_path
+
+        ast_extractor = None
+        if file_path_obj in self.ast_cache:
+            root_node, language = self.ast_cache[file_path_obj]
+            fqn_config = LANGUAGE_FQN_SPECS.get(language)
+
+            if fqn_config:
+
+                def ast_extractor_func(qname: str, path: Path) -> str | None:
+                    return find_function_source_by_fqn(
+                        root_node,
+                        qname,
+                        path,
+                        self.repo_path,
+                        self.project_name,
+                        fqn_config,
+                    )
+
+                ast_extractor = ast_extractor_func
+
+        return extract_source_with_fallback(
+            file_path_obj,
+            start_line,
+            end_line,
+            qualified_name,
+            ast_extractor,
+            cache=self.source_cache,
+        )
+
+    def _parse_embedding_result(self, row: ResultRow) -> EmbeddingQueryResult | None:
+        node_id = row.get(cs.KEY_NODE_ID)
+        qualified_name = row.get(cs.KEY_QUALIFIED_NAME)
+
+        if not isinstance(node_id, int) or not isinstance(qualified_name, str):
+            return None
+
+        start_line = row.get(cs.KEY_START_LINE)
+        end_line = row.get(cs.KEY_END_LINE)
+        file_path = row.get(cs.KEY_PATH)
+
+        return EmbeddingQueryResult(
+            node_id=node_id,
+            qualified_name=qualified_name,
+            start_line=start_line if isinstance(start_line, int) else None,
+            end_line=end_line if isinstance(end_line, int) else None,
+            path=file_path if isinstance(file_path, str) else None,
+        )
 
 
 class FunctionRegistryTrie:
@@ -76,9 +334,9 @@ class FunctionRegistryTrie:
         if qualified_name not in self._entries:
             return
 
-        del self._entries[qualified_name]
-
         parts = qualified_name.split(cs.SEPARATOR_DOT)
+
+        del self._entries[qualified_name]
         self._cleanup_trie_path(parts, self.root)
 
     def _cleanup_trie_path(self, parts: list[str], node: TrieNode) -> bool:
@@ -156,11 +414,8 @@ class FunctionRegistryTrie:
         return [qn for qn, _ in matches]
 
     def find_ending_with(self, suffix: str) -> list[QualifiedName]:
-        if self._simple_name_lookup is not None and suffix in self._simple_name_lookup:
-            # (H) O(1) lookup using the simple_name_lookup index
-            return sorted(self._simple_name_lookup[suffix])
-        # (H) Fallback to linear scan if no index available
-        return sorted(qn for qn in self._entries.keys() if qn.endswith(f".{suffix}"))
+        suffix_str = str(suffix)
+        return sorted(qn for qn in self._entries.keys() if qn.endswith(suffix_str))
 
     def find_with_prefix(self, prefix: str) -> list[tuple[QualifiedName, NodeType]]:
         node = self._navigate_to_prefix(prefix)
@@ -221,9 +476,14 @@ class BoundedASTCache:
 
     def _should_evict_for_memory(self) -> bool:
         try:
-            cache_size = sum(sys.getsizeof(v) for v in self.cache.values())
-            return cache_size > self.max_memory_bytes
-        except Exception:
+            # (H) Approximate memory by counting nodes and character length of cached ASTs.
+            # Node objects are wrappers; text length is a much better proxy for memory usage.
+            total_size_estimate = 0
+            for root, _ in self.cache.values():
+                total_size_estimate += len(root.text) if root.text else 0
+
+            return total_size_estimate > self.max_memory_bytes
+        except (AttributeError, TypeError):
             return (
                 len(self.cache)
                 > self.max_entries * settings.CACHE_MEMORY_THRESHOLD_RATIO
@@ -290,8 +550,18 @@ class GraphUpdater:
             simple_name_lookup=self.simple_name_lookup
         )
         self.ast_cache = BoundedASTCache()
+        self.source_cache = SourceFileCache()
         self.unignore_paths = unignore_paths
         self.exclude_paths = exclude_paths
+
+        self.eligible_files: list[Path] = []
+        self.embedding_generator = EmbeddingGenerator(
+            ingestor=self.ingestor,
+            repo_path=self.repo_path,
+            project_name=self.project_name,
+            ast_cache=self.ast_cache,
+            source_cache=self.source_cache,
+        )
 
         self.factory = ProcessorFactory(
             ingestor=self.ingestor,
@@ -311,6 +581,18 @@ class GraphUpdater:
             or filepath.suffix.lower() == cs.CSPROJ_SUFFIX
         )
 
+    def _collect_eligible_files(self) -> list[Path]:
+        """
+        Backwards-compatible helper for tests/older call sites.
+
+        The authoritative source of eligible files is `StructureProcessor.identify_structure`.
+        This wrapper ensures a deterministic, sorted list.
+        """
+        if self._single_file is not None:
+            return [self._single_file]
+        files = self.factory.structure_processor.identify_structure(collect_files=True)
+        return sorted(files, key=lambda p: str(p))
+
     def run(self, force: bool = False) -> None:
         self.ingestor.ensure_node_batch(
             cs.NODE_PROJECT, {cs.KEY_NAME: self.project_name}
@@ -318,7 +600,11 @@ class GraphUpdater:
         logger.info(ls.ENSURING_PROJECT, name=self.project_name)
 
         logger.info(ls.PASS_1_STRUCTURE)
-        self.factory.structure_processor.identify_structure()
+        self.eligible_files = (
+            self._collect_eligible_files()
+            if self._single_file is None
+            else [self._single_file]
+        )
 
         logger.info(ls.PASS_2_FILES)
         self._process_files(force=force)
@@ -338,7 +624,7 @@ class GraphUpdater:
 
         self._prune_orphan_nodes()
 
-        self._generate_semantic_embeddings()
+        self.embedding_generator.generate()
 
     def remove_file_from_state(self, file_path: Path) -> None:
         logger.debug(ls.REMOVING_STATE, path=file_path)
@@ -372,58 +658,13 @@ class GraphUpdater:
                 self.simple_name_lookup[simple_name] = new_qn_set
                 logger.debug(ls.CLEANED_SIMPLE_NAME, name=simple_name)
 
-    def _should_keep_dir(self, dirname: str, dir_prefix: str) -> bool:
-        if dirname not in cs.IGNORE_PATTERNS and (
-            not self.exclude_paths or dirname not in self.exclude_paths
-        ):
-            return True
-        return bool(
-            self.unignore_paths
-            and any(
-                u.startswith(f"{dir_prefix}{dirname}/") or u == f"{dir_prefix}{dirname}"
-                for u in self.unignore_paths
-            )
-        )
-
-    def _collect_eligible_files(self) -> list[Path]:
-        if self._single_file is not None:
-            if not should_skip_path(
-                self._single_file,
-                self.repo_path,
-                exclude_paths=self.exclude_paths,
-                unignore_paths=self.unignore_paths,
-            ):
-                return [self._single_file]
-            return []
-
-        eligible: list[Path] = []
-        hash_name = cs.HASH_CACHE_FILENAME
-        for dirpath, dirnames, filenames in os.walk(str(self.repo_path)):
-            rel_dir = Path(dirpath).relative_to(self.repo_path).as_posix()
-            dir_prefix = "" if rel_dir == "." else f"{rel_dir}/"
-            dirnames[:] = sorted(
-                d for d in dirnames if self._should_keep_dir(d, dir_prefix)
-            )
-            for fname in sorted(filenames):
-                if fname == hash_name:
-                    continue
-                filepath = Path(dirpath) / fname
-                if not should_skip_path(
-                    filepath,
-                    self.repo_path,
-                    exclude_paths=self.exclude_paths,
-                    unignore_paths=self.unignore_paths,
-                ):
-                    eligible.append(filepath)
-        return eligible
-
     def _process_files(self, force: bool = False) -> None:
+        eligible = self.eligible_files
         cache_path = self.repo_path / cs.HASH_CACHE_FILENAME
         old_hashes = _load_hash_cache(cache_path) if not force else {}
         if force:
             logger.info(ls.INCREMENTAL_FORCE)
 
-        eligible_files = self._collect_eligible_files()
         new_hashes: FileHashCache = {}
         skipped_count = 0
         changed_count = 0
@@ -438,34 +679,21 @@ class GraphUpdater:
             TextColumn("[progress.description]{task.description}"),
             transient=True,
         ) as progress:
-            task = progress.add_task("", total=len(eligible_files))
+            task = progress.add_task("", total=len(eligible))
 
-            for filepath in eligible_files:
-                file_key = str(filepath.relative_to(self.repo_path))
+            for filepath in eligible:
+                file_key, current_hash, is_changed = self._handle_file_change(
+                    filepath, old_hashes, force
+                )
+                new_hashes[file_key] = current_hash
                 current_file_keys.add(file_key)
 
-                current_hash = _hash_file(filepath)
-                new_hashes[file_key] = current_hash
-
-                if (
-                    not force
-                    and file_key in old_hashes
-                    and old_hashes[file_key] == current_hash
-                ):
-                    logger.debug(ls.FILE_HASH_UNCHANGED, path=file_key)
+                if not is_changed:
                     skipped_count += 1
                     progress.advance(task)
                     continue
 
-                if file_key in old_hashes:
-                    logger.debug(ls.FILE_HASH_CHANGED, path=file_key)
-                    self.remove_file_from_state(filepath)
-                else:
-                    logger.debug(ls.FILE_HASH_NEW, path=file_key)
-
                 changed_count += 1
-                self._process_single_file(filepath)
-
                 processed_since_flush += 1
                 if processed_since_flush >= settings.FILE_FLUSH_INTERVAL:
                     logger.info(ls.PERIODIC_FLUSH.format(count=processed_since_flush))
@@ -478,19 +706,7 @@ class GraphUpdater:
                     description=ls.PROGRESS_FILES_PROCESSED.format(count=changed_count),
                 )
 
-        deleted_keys = set(old_hashes.keys()) - current_file_keys
-        if deleted_keys:
-            logger.info(ls.INCREMENTAL_DELETED, count=len(deleted_keys))
-            for deleted_key in deleted_keys:
-                deleted_path = self.repo_path / deleted_key
-                self.remove_file_from_state(deleted_path)
-                if isinstance(self.ingestor, QueryProtocol):
-                    self.ingestor.execute_write(
-                        cs.CYPHER_DELETE_MODULE, {cs.KEY_PATH: deleted_key}
-                    )
-                    self.ingestor.execute_write(
-                        cs.CYPHER_DELETE_FILE, {cs.KEY_PATH: deleted_key}
-                    )
+        self._handle_deleted_files(old_hashes, current_file_keys)
 
         if skipped_count > 0:
             logger.info(ls.INCREMENTAL_SKIPPED, count=skipped_count)
@@ -498,6 +714,39 @@ class GraphUpdater:
             logger.info(ls.INCREMENTAL_CHANGED, count=changed_count)
 
         _save_hash_cache(cache_path, new_hashes)
+
+    def _handle_file_change(
+        self, filepath: Path, old_hashes: FileHashCache, force: bool
+    ) -> tuple[str, str, bool]:
+        file_key = str(filepath.relative_to(self.repo_path))
+        current_hash = _hash_file(filepath)
+
+        if not force and old_hashes.get(file_key) == current_hash:
+            logger.debug(ls.FILE_HASH_UNCHANGED, path=file_key)
+            return file_key, current_hash, False
+
+        if file_key in old_hashes:
+            logger.debug(ls.FILE_HASH_CHANGED, path=file_key)
+            self.remove_file_from_state(filepath)
+        else:
+            logger.debug(ls.FILE_HASH_NEW, path=file_key)
+
+        self._process_single_file(filepath)
+        return file_key, current_hash, True
+
+    def _handle_deleted_files(self, old_hashes: FileHashCache, current_keys: set[str]) -> None:
+        deleted_keys = set(old_hashes.keys()) - current_keys
+        if not deleted_keys:
+            return
+
+        logger.info(ls.INCREMENTAL_DELETED, count=len(deleted_keys))
+        for deleted_key in deleted_keys:
+            deleted_path = self.repo_path / deleted_key
+            self.remove_file_from_state(deleted_path)
+            if not isinstance(self.ingestor, QueryProtocol):
+                continue
+            self.ingestor.execute_write(cs.CYPHER_DELETE_MODULE, {cs.KEY_PATH: deleted_key})
+            self.ingestor.execute_write(cs.CYPHER_DELETE_FILE, {cs.KEY_PATH: deleted_key})
 
     def _process_single_file(self, filepath: Path) -> None:
         lang_config = get_language_spec(filepath.suffix)
@@ -534,42 +783,22 @@ class GraphUpdater:
 
         logger.info(ls.PRUNE_START)
         total_pruned = 0
-
-        project_prefix = self.project_name + "."
         repo_abs = self.repo_path.resolve().as_posix()
-        prune_specs: list[tuple[str, str, str]] = [
+        project_prefix = self.project_name + "."
+
+        prune_specs = [
             (cs.CYPHER_ALL_FILE_PATHS, cs.CYPHER_DELETE_FILE, "File"),
-            (
-                cs.CYPHER_ALL_MODULE_PATHS_INTERNAL,
-                cs.CYPHER_DELETE_MODULE,
-                "Module",
-            ),
+            (cs.CYPHER_ALL_MODULE_PATHS_INTERNAL, cs.CYPHER_DELETE_MODULE, "Module"),
             (cs.CYPHER_ALL_FOLDER_PATHS, cs.CYPHER_DELETE_FOLDER, "Folder"),
         ]
 
         for query_all, delete_query, label in prune_specs:
-            rows = self.ingestor.fetch_all(query_all)
-            orphans = []
-            for r in rows:
-                path = r.get("path")
-                if not isinstance(path, str) or not path:
-                    continue
-                abs_path = r.get("absolute_path")
-                qn = r.get("qualified_name", "")
-                if isinstance(abs_path, str) and not abs_path.startswith(repo_abs):
-                    continue
-                if isinstance(qn, str) and qn and not qn.startswith(project_prefix):
-                    continue
-                if not (self.repo_path / path).exists():
-                    orphans.append(path)
-
+            orphans = self._find_orphans_for_spec(
+                query_all, repo_abs, project_prefix
+            )
             if orphans:
                 logger.info(ls.PRUNE_FOUND, count=len(orphans), label=label)
-                for orphan_path in orphans:
-                    logger.debug(ls.PRUNE_DELETING, label=label, path=orphan_path)
-                    self.ingestor.execute_write(
-                        delete_query, {cs.KEY_PATH: orphan_path}
-                    )
+                self._remove_orphans(delete_query, orphans, label)
                 total_pruned += len(orphans)
 
         if total_pruned:
@@ -577,167 +806,29 @@ class GraphUpdater:
         else:
             logger.info(ls.PRUNE_SKIP)
 
-    def _generate_semantic_embeddings(self) -> None:
-        if not has_semantic_dependencies():
-            logger.info(ls.SEMANTIC_NOT_AVAILABLE)
-            return
+    def _find_orphans_for_spec(
+        self, query_all: str, repo_abs: str, project_prefix: str
+    ) -> list[str]:
+        rows = self.ingestor.fetch_all(query_all)
+        orphans = []
+        for r in rows:
+            path = r.get("path")
+            if not isinstance(path, str) or not path:
+                continue
+            abs_path = r.get("absolute_path")
+            qn = r.get("qualified_name", "")
+            if isinstance(abs_path, str) and not abs_path.startswith(repo_abs):
+                continue
+            if isinstance(qn, str) and qn and not qn.startswith(project_prefix):
+                continue
+            if not (self.repo_path / path).exists():
+                orphans.append(path)
+        return orphans
 
-        if not isinstance(self.ingestor, QueryProtocol):
-            logger.info(ls.INGESTOR_NO_QUERY)
-            return
+    def _remove_orphans(self, delete_query: str, orphans: list[str], label: str) -> None:
+        for orphan_path in orphans:
+            logger.debug(ls.PRUNE_DELETING, label=label, path=orphan_path)
+            self.ingestor.execute_write(delete_query, {cs.KEY_PATH: orphan_path})
 
-        try:
-            from .embedder import embed_code, get_embedding_cache
-            from .vector_store import (
-                close_qdrant_client,
-                store_embedding_batch,
-                verify_stored_ids,
-            )
-
-            logger.info(ls.PASS_4_EMBEDDINGS)
-
-            results = self.ingestor.fetch_all(
-                cs.CYPHER_QUERY_EMBEDDINGS, {"project_name": self.project_name}
-            )
-
-            if not results:
-                logger.info(ls.NO_FUNCTIONS_FOR_EMBEDDING)
-                return
-
-            logger.info(ls.GENERATING_EMBEDDINGS, count=len(results))
-
-            embedded_count = 0
-            expected_ids: set[int] = set()
-            batch_buffer: list[tuple[int, list[float], str]] = []
-            batch_size = settings.QDRANT_BATCH_SIZE
-
-            for row in results:
-                parsed = self._parse_embedding_result(row)
-                if parsed is None:
-                    continue
-
-                node_id = parsed[cs.KEY_NODE_ID]
-                qualified_name = parsed[cs.KEY_QUALIFIED_NAME]
-                start_line = parsed.get(cs.KEY_START_LINE)
-                end_line = parsed.get(cs.KEY_END_LINE)
-                file_path = parsed.get(cs.KEY_PATH)
-
-                if start_line is None or end_line is None or file_path is None:
-                    logger.debug(ls.NO_SOURCE_FOR, name=qualified_name)
-                    continue
-
-                if source_code := self._extract_source_code(
-                    qualified_name, file_path, start_line, end_line
-                ):
-                    try:
-                        embedding = embed_code(source_code)
-                        batch_buffer.append((node_id, embedding, qualified_name))
-                        expected_ids.add(node_id)
-
-                        if len(batch_buffer) >= batch_size:
-                            embedded_count += store_embedding_batch(batch_buffer)
-                            batch_buffer = []
-
-                        if (
-                            embedded_count % settings.EMBEDDING_PROGRESS_INTERVAL == 0
-                            and embedded_count > 0
-                        ):
-                            logger.debug(
-                                ls.EMBEDDING_PROGRESS,
-                                done=embedded_count,
-                                total=len(results),
-                            )
-
-                    except Exception as e:
-                        logger.warning(
-                            ls.EMBEDDING_FAILED, name=qualified_name, error=e
-                        )
-                else:
-                    logger.debug(ls.NO_SOURCE_FOR, name=qualified_name)
-
-            if batch_buffer:
-                embedded_count += store_embedding_batch(batch_buffer)
-
-            logger.info(ls.EMBEDDINGS_COMPLETE, count=embedded_count)
-
-            self._reconcile_embeddings(expected_ids, verify_stored_ids)
-
-            get_embedding_cache().save()
-            close_qdrant_client()
-
-        except Exception as e:
-            logger.warning(ls.EMBEDDING_GENERATION_FAILED, error=e)
-
-    def _reconcile_embeddings(
-        self,
-        expected_ids: set[int],
-        verify_fn: Callable[[set[int]], set[int]],
-    ) -> None:
-        if not expected_ids:
-            return
-        try:
-            stored_ids = verify_fn(expected_ids)
-            missing = expected_ids - stored_ids
-            if missing:
-                sample = sorted(missing)[:10]
-                logger.warning(
-                    ls.EMBEDDING_RECONCILE_MISSING.format(
-                        missing=len(missing),
-                        expected=len(expected_ids),
-                        sample_ids=sample,
-                    )
-                )
-            else:
-                logger.info(ls.EMBEDDING_RECONCILE_OK.format(count=len(expected_ids)))
-        except Exception as e:
-            logger.warning(ls.EMBEDDING_RECONCILE_FAILED.format(error=e))
-
-    def _extract_source_code(
-        self, qualified_name: str, file_path: str, start_line: int, end_line: int
-    ) -> str | None:
-        if not file_path or not start_line or not end_line:
-            return None
-
-        file_path_obj = self.repo_path / file_path
-
-        ast_extractor = None
-        if file_path_obj in self.ast_cache:
-            root_node, language = self.ast_cache[file_path_obj]
-            fqn_config = LANGUAGE_FQN_SPECS.get(language)
-
-            if fqn_config:
-
-                def ast_extractor_func(qname: str, path: Path) -> str | None:
-                    return find_function_source_by_fqn(
-                        root_node,
-                        qname,
-                        path,
-                        self.repo_path,
-                        self.project_name,
-                        fqn_config,
-                    )
-
-                ast_extractor = ast_extractor_func
-
-        return extract_source_with_fallback(
-            file_path_obj, start_line, end_line, qualified_name, ast_extractor
-        )
-
-    def _parse_embedding_result(self, row: ResultRow) -> EmbeddingQueryResult | None:
-        node_id = row.get(cs.KEY_NODE_ID)
-        qualified_name = row.get(cs.KEY_QUALIFIED_NAME)
-
-        if not isinstance(node_id, int) or not isinstance(qualified_name, str):
-            return None
-
-        start_line = row.get(cs.KEY_START_LINE)
-        end_line = row.get(cs.KEY_END_LINE)
-        file_path = row.get(cs.KEY_PATH)
-
-        return EmbeddingQueryResult(
-            node_id=node_id,
-            qualified_name=qualified_name,
-            start_line=start_line if isinstance(start_line, int) else None,
-            end_line=end_line if isinstance(end_line, int) else None,
-            path=file_path if isinstance(file_path, str) else None,
-        )
+    def _generate_semantic_embeddings(self) -> None:  # Backwards compatibility shim
+        self.embedding_generator.generate()

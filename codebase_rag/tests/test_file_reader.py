@@ -76,7 +76,7 @@ class TestFileReadResult:
 
 class TestReadFile:
     async def test_read_existing_text_file(
-        self, file_reader: FileReader, sample_text_file: Path
+        self, file_reader: FileReader, _sample_text_file: Path
     ) -> None:
         result = await file_reader.read_file("sample.txt")
         assert result.content == "Hello, World!\nLine 2\nLine 3"
@@ -151,6 +151,21 @@ class TestReadFile:
         assert result.content == "Nested content"
         assert result.error_message is None
 
+    async def test_read_file_cache_invalidates_on_mtime_change(
+        self, file_reader: FileReader, temp_project_root: Path
+    ) -> None:
+        p = temp_project_root / "changing.txt"
+        p.write_text("v1", encoding="utf-8")
+
+        r1 = await file_reader.read_file("changing.txt")
+        assert r1.content == "v1"
+
+        # Update file; mtime_ns should change on most filesystems.
+        p.write_text("v2", encoding="utf-8")
+
+        r2 = await file_reader.read_file("changing.txt")
+        assert r2.content == "v2"
+
     async def test_read_directory_returns_error(
         self, file_reader: FileReader, temp_project_root: Path
     ) -> None:
@@ -172,7 +187,7 @@ class TestCreateFileReaderTool:
         assert "read" in tool.description.lower()
 
     async def test_tool_function_returns_content(
-        self, file_reader: FileReader, sample_text_file: Path
+        self, file_reader: FileReader, _sample_text_file: Path
     ) -> None:
         tool = create_file_reader_tool(file_reader)
         result = await tool.function(file_path="sample.txt")

@@ -1,6 +1,7 @@
 import importlib
 import subprocess
 import sys
+import threading
 from copy import deepcopy
 from pathlib import Path
 
@@ -12,6 +13,12 @@ from . import exceptions as ex
 from . import logs as ls
 from .language_spec import LANGUAGE_SPECS, LanguageSpec
 from .types_defs import LanguageImport, LanguageLoader, LanguageQueries
+
+_LOAD_PARSERS_LOCK = threading.Lock()
+_CACHED_PARSERS_AND_QUERIES: (
+    tuple[dict[cs.SupportedLanguage, Parser], dict[cs.SupportedLanguage, LanguageQueries]]
+    | None
+) = None
 
 
 def _try_load_from_submodule(lang_name: cs.SupportedLanguage) -> LanguageLoader:
@@ -287,17 +294,34 @@ def _process_language(
 def load_parsers() -> tuple[
     dict[cs.SupportedLanguage, Parser], dict[cs.SupportedLanguage, LanguageQueries]
 ]:
-    parsers: dict[cs.SupportedLanguage, Parser] = {}
-    queries: dict[cs.SupportedLanguage, LanguageQueries] = {}
-    available_languages: list[cs.SupportedLanguage] = []
+    """
+    Load and initialize all available Tree-sitter parsers and queries.
 
-    for lang_key, lang_config in deepcopy(LANGUAGE_SPECS).items():
-        lang_name = cs.SupportedLanguage(lang_key)
-        if _process_language(lang_name, lang_config, parsers, queries):
-            available_languages.append(lang_name)
+    This is relatively expensive (language + query compilation). We cache the result
+    per process to avoid repeated initialization in API flows that run per-finding
+    pipelines in parallel.
+    """
+    global _CACHED_PARSERS_AND_QUERIES
+    if _CACHED_PARSERS_AND_QUERIES is not None:
+        return _CACHED_PARSERS_AND_QUERIES
 
-    if not available_languages:
-        raise RuntimeError(ex.NO_LANGUAGES)
+    with _LOAD_PARSERS_LOCK:
+        if _CACHED_PARSERS_AND_QUERIES is not None:
+            return _CACHED_PARSERS_AND_QUERIES
+        parsers: dict[cs.SupportedLanguage, Parser] = {}
+        queries: dict[cs.SupportedLanguage, LanguageQueries] = {}
+        available_languages: list[cs.SupportedLanguage] = []
 
-    logger.info(ls.INITIALIZED_PARSERS.format(languages=", ".join(available_languages)))
-    return parsers, queries
+        for lang_key, lang_config in deepcopy(LANGUAGE_SPECS).items():
+            lang_name = cs.SupportedLanguage(lang_key)
+            if _process_language(lang_name, lang_config, parsers, queries):
+                available_languages.append(lang_name)
+
+        if not available_languages:
+            raise RuntimeError(ex.NO_LANGUAGES)
+
+        logger.info(
+            ls.INITIALIZED_PARSERS.format(languages=", ".join(available_languages))
+        )
+        _CACHED_PARSERS_AND_QUERIES = (parsers, queries)
+        return _CACHED_PARSERS_AND_QUERIES

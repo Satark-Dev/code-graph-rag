@@ -233,7 +233,7 @@ class TestAnthropicProvider:
     @patch("codebase_rag.providers.base.PydanticAnthropicProvider")
     @patch("codebase_rag.providers.base.AnthropicModel")
     def test_anthropic_model_creation(
-        self, mock_anthropic_model: Any, mock_anthropic_provider: Any
+        self, mock_anthropic_model: Any, _mock_anthropic_provider: Any
     ) -> None:
         provider = AnthropicProvider(api_key="sk-ant-test-key")
         mock_model = MagicMock()
@@ -310,7 +310,7 @@ class TestModelCreation:
     @patch("codebase_rag.providers.base.PydanticGoogleProvider")
     @patch("codebase_rag.providers.base.GoogleModel")
     def test_google_model_creation_without_thinking_budget(
-        self, mock_google_model: Any, mock_google_provider: Any
+        self, mock_google_model: Any, _mock_google_provider: Any
     ) -> None:
         provider = GoogleProvider(
             api_key="test-key", provider_type=GoogleProviderType.GLA
@@ -332,7 +332,7 @@ class TestModelCreation:
         self,
         mock_model_settings: Any,
         mock_google_model: Any,
-        mock_google_provider: Any,
+        _mock_google_provider: Any,
     ) -> None:
         provider = GoogleProvider(
             api_key="test-key",

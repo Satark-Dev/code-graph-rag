@@ -257,7 +257,6 @@ class FunctionIngestMixin:
             logger.info(ls.METHOD_FOUND.format(name=entry.method_name, qn=method_qn))
             self.ingestor.ensure_node_batch(cs.NodeLabel.METHOD, props)
             self.function_registry[method_qn] = NodeType.METHOD
-            self.simple_name_lookup[entry.method_name].add(method_qn)
 
             self.ingestor.ensure_relationship_batch(
                 (cs.NodeLabel.CLASS, cs.KEY_QUALIFIED_NAME, class_qn),

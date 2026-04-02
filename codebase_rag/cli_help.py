@@ -11,6 +11,7 @@ class CLICommandName(StrEnum):
     LANGUAGE = "language"
     DOCTOR = "doctor"
     STATS = "stats"
+    CONSUMERS = "consumers"
 
 
 APP_DESCRIPTION = (
@@ -28,6 +29,24 @@ CMD_GRAPH_LOADER = "Load and display summary of exported graph JSON"
 CMD_LANGUAGE = "Manage language grammars (add, remove, list)"
 CMD_DOCTOR = "Verify that all dependencies and configurations are properly set up"
 CMD_STATS = "Display node and relationship statistics for the indexed graph"
+CMD_CONSUMERS = (
+    "Run embedded Kafka consumers only (no HTTP server). "
+    "Uses the FastAPI lifespan to start index/chat consumers and the Kafka producer."
+)
+HELP_NO_EMBEDDED_KAFKA_CONSUMERS = (
+    "Do not start embedded Kafka index/chat job consumers inside this process "
+    "(use separate scripts/consume_index_jobs.py and the stage consumers instead). "
+    "Equivalent to CGR_EMBEDDED_KAFKA_CONSUMERS=0."
+)
+HELP_NO_EMBEDDED_KAFKA_INDEX_CONSUMER = (
+    "Do not start the embedded Kafka index job consumer (no clone/GraphUpdater in this process). "
+    "Chat jobs still use the local clone under KAFKA_REPO_ROOT from a prior index run or "
+    "scripts/consume_index_jobs.py. Equivalent to CGR_EMBEDDED_KAFKA_INDEX_CONSUMERS=0."
+)
+HELP_NO_EMBEDDED_KAFKA_CHAT_CONSUMER = (
+    "Do not start the embedded Kafka chat pipeline consumers in this process. "
+    "Equivalent to CGR_EMBEDDED_KAFKA_CHAT_CONSUMERS=0."
+)
 
 CMD_LANGUAGE_GROUP = "CLI for managing language grammars"
 CMD_LANGUAGE_ADD = "Add a new language grammar to the project."
@@ -116,4 +135,5 @@ CLI_COMMANDS: dict[CLICommandName, str] = {
     CLICommandName.LANGUAGE: CMD_LANGUAGE,
     CLICommandName.DOCTOR: CMD_DOCTOR,
     CLICommandName.STATS: CMD_STATS,
+    CLICommandName.CONSUMERS: CMD_CONSUMERS,
 }

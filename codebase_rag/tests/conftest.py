@@ -1,6 +1,82 @@
 from __future__ import annotations
 
 import os
+
+
+# AppConfig (strict mode) requires every key from .env.example in os.environ.
+# Seed new optional keys so pytest can import before a developer merges .env.example.
+def _seed_strict_env_example_keys() -> None:
+    for key, val in (
+        ("CORE_DB_HOST", ""),
+        ("CORE_DB_PORT", ""),
+        ("CORE_DB_USER", ""),
+        ("CORE_DB_PASSWORD", ""),
+        ("CORE_DB_NAME", ""),
+        ("CORE_DB_SSL", ""),
+        ("ORG_DB_HOST_1", ""),
+        ("ORG_DB_PORT_1", ""),
+        ("ORG_DB_USER_1", ""),
+        ("ORG_DB_PASSWORD_1", ""),
+        ("ORG_DB_NAME_1", ""),
+        ("ORG_DB_SSL_1", ""),
+        ("ORG_DB_HOST_2", ""),
+        ("ORG_DB_PORT_2", ""),
+        ("ORG_DB_USER_2", ""),
+        ("ORG_DB_PASSWORD_2", ""),
+        ("ORG_DB_NAME_2", ""),
+        ("ORG_DB_SSL_2", ""),
+        ("DB_POOL_MIN_SIZE", "2"),
+        ("DB_POOL_MAX_SIZE", "10"),
+        ("DB_COMMAND_TIMEOUT", "60"),
+        ("DB_CONNECT_TIMEOUT", "30"),
+        ("KAFKA_BOOTSTRAP_SERVERS", ""),
+        ("KAFKA_EVIDENCE_JOBS_TOPIC", "ai.cgr.evidence"),
+        ("KAFKA_EVIDENCE_CONSUMER_GROUP_ID", "cgr-evidence-jobs"),
+        ("KAFKA_EVIDENCE_MAX_CONCURRENCY", "4"),
+        ("KAFKA_EVIDENCE_AUTO_OFFSET_RESET", "latest"),
+        ("KAFKA_EVIDENCE_FETCH_MAX_WAIT_MS", "500"),
+        ("KAFKA_EVIDENCE_SESSION_TIMEOUT_MS", "30000"),
+        ("KAFKA_EVIDENCE_RECONNECT_MAX_SECONDS", "60"),
+        ("KAFKA_EVIDENCE_RECONNECT_BACKOFF_INITIAL", "1"),
+        ("KAFKA_EVIDENCE_TOPIC_NUM_PARTITIONS", "3"),
+        ("KAFKA_EVIDENCE_TOPIC_REPLICATION_FACTOR", "1"),
+        ("KAFKA_SCORING_JOBS_TOPIC", "ai.cgr.score"),
+        ("KAFKA_SCORING_CONSUMER_GROUP_ID", "cgr-scoring-jobs"),
+        ("KAFKA_SCORING_MAX_CONCURRENCY", "4"),
+        ("KAFKA_SCORING_AUTO_OFFSET_RESET", "latest"),
+        ("KAFKA_SCORING_FETCH_MAX_WAIT_MS", "500"),
+        ("KAFKA_SCORING_SESSION_TIMEOUT_MS", "30000"),
+        ("KAFKA_SCORING_RECONNECT_MAX_SECONDS", "60"),
+        ("KAFKA_SCORING_RECONNECT_BACKOFF_INITIAL", "1"),
+        ("KAFKA_SCORING_TOPIC_NUM_PARTITIONS", "3"),
+        ("KAFKA_SCORING_TOPIC_REPLICATION_FACTOR", "1"),
+        ("KAFKA_REMEDIATION_JOBS_TOPIC", "ai.cgr.remediation"),
+        ("KAFKA_REMEDIATION_CONSUMER_GROUP_ID", "cgr-remediation-jobs"),
+        ("KAFKA_REMEDIATION_MAX_CONCURRENCY", "4"),
+        ("KAFKA_REMEDIATION_AUTO_OFFSET_RESET", "latest"),
+        ("KAFKA_REMEDIATION_FETCH_MAX_WAIT_MS", "500"),
+        ("KAFKA_REMEDIATION_SESSION_TIMEOUT_MS", "30000"),
+        ("KAFKA_REMEDIATION_RECONNECT_MAX_SECONDS", "60"),
+        ("KAFKA_REMEDIATION_RECONNECT_BACKOFF_INITIAL", "1"),
+        ("KAFKA_REMEDIATION_TOPIC_NUM_PARTITIONS", "3"),
+        ("KAFKA_REMEDIATION_TOPIC_REPLICATION_FACTOR", "1"),
+        ("KAFKA_INDEX_JOBS_TOPIC", "ai.cgr.index"),
+        ("KAFKA_INDEX_CONSUMER_GROUP_ID", "cgr-index-jobs"),
+        ("KAFKA_INDEX_MAX_CONCURRENCY", "2"),
+        ("KAFKA_INDEX_AUTO_OFFSET_RESET", "latest"),
+        ("KAFKA_INDEX_SHUTDOWN_GRACE_SECONDS", "30"),
+        ("KAFKA_INDEX_FETCH_MAX_WAIT_MS", "500"),
+        ("KAFKA_INDEX_SESSION_TIMEOUT_MS", "30000"),
+        ("KAFKA_INDEX_RECONNECT_MAX_SECONDS", "60"),
+        ("KAFKA_INDEX_RECONNECT_BACKOFF_INITIAL", "1"),
+        ("KAFKA_INDEX_TOPIC_NUM_PARTITIONS", "1"),
+        ("KAFKA_INDEX_TOPIC_REPLICATION_FACTOR", "1"),
+    ):
+        os.environ.setdefault(key, val)
+
+
+_seed_strict_env_example_keys()
+
 import shutil
 import sys
 import tempfile
@@ -213,20 +289,15 @@ def mock_updater(temp_repo: Path, mock_ingestor: MagicMock) -> MagicMock:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def cleanup_qdrant_client() -> Generator[None, None, None]:
+def cleanup_pgvector_client() -> Generator[None, None, None]:
     yield
 
     try:
-        from codebase_rag.utils.dependencies import has_qdrant_client
+        from codebase_rag.utils.dependencies import has_pgvector_client
 
-        if has_qdrant_client():
+        if has_pgvector_client():
             import codebase_rag.vector_store as vs
 
-            if vs._CLIENT is not None:
-                try:
-                    vs._CLIENT.close()
-                except Exception:
-                    pass
-                vs._CLIENT = None
+            vs.close_pgvector_client()
     except Exception:
         pass

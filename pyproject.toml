@@ -36,11 +36,13 @@ keywords = [
 ]
 dependencies = [
     "loguru>=0.7.3",
-    "mcp>=1.25.0",
-    "pydantic-ai>=1.70.0",
-    "pydantic-settings>=2.12.0",
-    "pymgclient>=1.5.1",
-    "python-dotenv>=1.2.1",
+    "mcp>=1.21.1",
+    "pydantic-ai-slim[anthropic,google,openai,vertexai]>=1.18.0",
+    "pydantic-settings>=2.0.0",
+    "fastapi>=0.111.0",
+    "uvicorn>=0.30.0",
+    "pymgclient>=1.4.0",
+    "python-dotenv>=1.1.0",
     "tiktoken>=0.12.0",
     "toml>=0.10.2",
     "tree-sitter-python>=0.25.0",
@@ -54,6 +56,8 @@ dependencies = [
     "protobuf>=6.33.5",
     "defusedxml>=0.7.1",
     "huggingface-hub[hf-xet]>=1.7.2",
+    "aiokafka>=0.11.0",
+    "kafka-python-ng>=2.2.3",
 ]
 
 [project.scripts]
@@ -91,9 +95,8 @@ treesitter-full = [
 ]
 
 semantic = [
-    "qdrant-client>=1.9.0",
-    "torch>=2.6.0",
-    "transformers>=4.0.0",
+    "pgvector>=0.3.2",
+    "psycopg[binary]>=3.2.3",
 ]
 
 [tool.ruff]
@@ -117,6 +120,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = ["T201"]
+"scripts/consume_evidence_jobs.py" = ["E402", "T201"]
+"scripts/consume_scoring_jobs.py" = ["E402", "T201"]
+"scripts/consume_remediation_jobs.py" = ["E402", "T201"]
 "benchmarks/**" = ["T201"]
 
 [tool.ruff.format]
