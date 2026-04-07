@@ -58,6 +58,7 @@ dependencies = [
     "huggingface-hub[hf-xet]>=1.7.2",
     "aiokafka>=0.11.0",
     "kafka-python-ng>=2.2.3",
+    "newrelic>=12.1.0",
 ]
 
 [project.scripts]

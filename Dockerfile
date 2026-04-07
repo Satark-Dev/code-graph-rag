@@ -6,7 +6,7 @@ COPY --from=uv /uv /uvx /bin/
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        cmake build-essential libssl-dev zlib1g-dev libzstd-dev && \
+    cmake build-essential libssl-dev zlib1g-dev libzstd-dev && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -22,7 +22,6 @@ FROM python:3.14-slim@sha256:fb83750094b46fd6b8adaa80f66e2302ecbe45d513f6cece637
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ripgrep libssl3 zlib1g libzstd1 && \
     rm -rf /var/lib/apt/lists/*
-
 RUN useradd --create-home appuser
 USER appuser
 WORKDIR /app
@@ -35,17 +34,8 @@ COPY --from=builder --chown=appuser:appuser /app/pyproject.toml /app/pyproject.t
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-COPY --chmod=755 <<'EOF' /app/entrypoint.sh
-#!/bin/sh
-ARCH=$(uname -m)
-case "$ARCH" in
-    x86_64)  LIBDIR="/lib/x86_64-linux-gnu" ;;
-    aarch64) LIBDIR="/lib/aarch64-linux-gnu" ;;
-    *)       LIBDIR="/lib" ;;
-esac
-export LD_PRELOAD="$LIBDIR/libz.so.1:$LIBDIR/libzstd.so.1"
-exec code-graph-rag "$@"
-EOF
+COPY --chown=appuser:appuser entrypoint.sh /app/entrypoint.sh
+RUN chmod 755 /app/entrypoint.sh
 
 ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["mcp-server"]

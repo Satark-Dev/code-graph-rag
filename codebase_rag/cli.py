@@ -1,10 +1,10 @@
 import asyncio
+import typer
 from collections.abc import Callable
 from dataclasses import dataclass
 from importlib.metadata import version as get_version
 from pathlib import Path
 
-import typer
 from loguru import logger
 from rich.panel import Panel
 from rich.table import Table
